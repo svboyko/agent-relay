@@ -64,5 +64,4 @@
 
 ## Open Questions
 - **Q1:** Interop off → agents in WSL cannot run `csc`/tests. Manual Windows builds only, or optional WSL compile of core (mono)?
-- **Q2:** V2 metric — what is measured (CPU %, I/O, latency)?
-- **Q3:** R13 `defaults` — needed, or explicit per project only?
+- **Q2:** R13 `defaults` — needed, or explicit per project only?

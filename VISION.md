@@ -1,8 +1,8 @@
 # Vision
 
 ## Purpose
-- **V1:** Keep editor/files on Windows; run coding agents in an isolated WSL environment.
-- **V2:** Connect local Zed to WSL agents without Zed remote/WSL mode; minimize cross-filesystem traffic that does CPU load and fan activity.
+- **V1:** Run coding agents in an isolated WSL environment. Agents see only explicitly provisioned files, not the whole Windows filesystem.
+- **V2:** Keep Zed and its tooling (git, language servers, file watching) native on Windows, where the files live. Avoid Zed WSL/remote mode: there the tooling scans Windows-mounted dirs from WSL; drvfs gives no change notifications, so it keeps polling, and the constant cross-filesystem I/O drives CPU load and fan noise. Agent file I/O is light and on demand, so agents can run in WSL.
 - **V3:** Support WSL with Windows drive automount and Windows executable interop disabled. Never depend on either; launching `wsl.exe` from Windows is allowed.
 - **V4:** Isolation comes from WSL configuration and filesystem access controls; path translation alone is not a security boundary.
 
