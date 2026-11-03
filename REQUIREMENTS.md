@@ -10,7 +10,7 @@
 - **R5:** New agent = new entry dir + rules class + build line. Zero core edits. (V14)
 
 ## Launch
-- **R6:** Child = `%SystemRoot%\System32\wsl.exe -d <distro> --cd <linuxCwd> -- [env K=V …] <agentExe> <args…>`. Nothing else. No native mode, no `cmd.exe`. (V1, V3, V8)
+- **R6:** Child = `%SystemRoot%\System32\wsl.exe -d <distro> --cd <linuxCwd> -- [env K=V …] <agentExe> <args…>` (exact form decided by test T-L7). No `cmd.exe`. Native launch only via `defaults.mode` `windows` for unmatched dirs (Q2). (V1, V3, V8)
 - **R7:** WSL side needs no automount, no interop, no Windows PATH. (V3)
 - **R8:** `linuxCwd` = launch dir mapped via project mappings. Always set. (V8)
 - **R9:** Agent args forwarded verbatim; Windows quoting safe for spaces, quotes, backslashes, Unicode. (V10)
@@ -19,9 +19,9 @@
 
 ## Config
 - **R12:** `agent-relay.json` beside exe. Only source. Read once at start. (V6)
-- **R13:** Shape: `projects[]` { `windowsRoot`, `linuxRoot`, `distribution`, `pathMappings[]`, `env{}`, `log{}`, `agents{ <name>: { executable, env{}, log{} } }` }. Optional top-level `defaults` (same fields, plus `mode`, `automountRoot`, and `agents.<name>.windowsExecutable` for mode `windows`); project wins, agent wins over project. `executable` is always a Linux path. (V6)
+- **R13:** Shape: `projects[]` { `windowsRoot`, `linuxRoot`, `distribution`, `pathMappings[]`, `env{}`, `agents{ <name>: { executable, env{}, log{} } }` }. Optional top-level `defaults` (same fields, plus `mode`, `automountRoot`, and `agents.<name>.windowsExecutable` for mode `windows`). Merge: defaults → project; agent fields taken whole (project over defaults); env keys defaults → project → agent. `log` only per agent. `executable` is always a Linux path. (V6)
 - **R14:** Validate at start: JSON ok, required fields, Win path = drive/UNC absolute, Linux path absolute ≠ `/`, no duplicate roots, agent section exists. (V7)
-- **R15:** Project select: launch dir, case-insensitive, dir boundary, longest root wins. No match → error. No `/mnt/<drive>` fallback. (V7, V13)
+- **R15:** Project select: launch dir, case-insensitive, dir boundary, longest root wins. No match → `defaults.mode` (`none` = error, default; `wsl` = automount mapping; `windows` = native). (V7, V13, Q2)
 - **R16:** Any config/select error → stderr `agent-relay-<agent>: <msg>`, exit 1, no child started. (V7)
 
 ## Translation
@@ -37,15 +37,15 @@
 - **R24:** stdin → child, child stdout → stdout. When translating: line-framed UTF-8, no BOM, `\n`, flush per line. Passthrough (no translation, mode `windows`): raw bytes, flush per read. (V10)
 - **R25:** Child stderr → stderr as raw bytes, untranslated. (V10)
 - **R26:** stdout = protocol only. Diagnostics → stderr or log. (V10)
-- **R27:** Child exit → drain stdout/stderr until each stream is at EOF or 2 s without traffic (never while data is being delivered; buffered partial line forwarded on timeout) → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. Child runs in a Windows Job Object so killing the relay kills it. (V11)
+- **R27:** Child runs in a Windows Job Object (killing the relay kills it). Child exit → terminate job (descendants holding pipes die) → drain stdout/stderr to EOF → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. (V11)
 - **R28:** Child start fail → stderr msg, exit 1. (V11)
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
 ## Logging
-- **R30:** Off by default. Enable + path per project/agent; relative path → beside exe. Default `agent-relay-<agent>.log`. (V12)
+- **R30:** Off by default. Configured per agent only; no project or shared log. One file per session in `log.dir` (relative → beside exe, default `logs`). (V12)
 - **R31:** Entry = ISO timestamp, session id, direction, received + forwarded line. (V12)
 - **R32:** Launch entry: cwd, project, args, `wsl.exe` cmdline, env. Mask names containing KEY/TOKEN/SECRET/PASSWORD/AUTH/CREDENTIAL. (V4, V12)
-- **R33:** Size cap (config, default 10 MB) → keep 1 rotated file. (V12)
+- **R33:** Keep last `log.keep` session files per agent (default 20); older deleted at start. (V12)
 - **R34:** Log write fail → one stderr warning, relay continues. (V12)
 
 ## Security
@@ -55,7 +55,7 @@
 ## Tests
 - **R37:** `agent-relay-tests.exe`: no deps; exit 0 = pass, 1 = fail; failures listed. (V17)
 - **R38:** Unit cover: quoting, config validation, project select, mappings (custom, case, boundary, `C:` root, `/mnt/cat` ≠ `/mnt/c`), content preservation, big IDs, per-agent rules, past failures. (V17)
-- **R39:** Launcher seam → lifecycle tests with fake child exe: EOF both ways, exit code, crash, start fail, no hang (timeout), drain idle timeout, relay kill → child killed (out-of-process, Windows only). Windows-only tests skipped under mono. (V11, V17)
+- **R39:** Launcher seam → lifecycle tests with fake child exe: EOF both ways, exit code, crash, start fail, no hang (timeout), grandchild holding stdout, relay kill → child killed (out-of-process, Windows only). Windows-only tests skipped under mono. (V11, V17)
 
 ## Docs
 - **R40:** README: build, install, config reference, isolation prereqs (`wsl.conf` automount/interop off, `fstab` drvfs mounts), file-access setup, agent install in WSL. (V18)
