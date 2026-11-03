@@ -1,6 +1,7 @@
 # Agent Relay — Specification
 
-Status: draft 2 (2026-11-03) — DEV-1 accepted, DEV-2 decided by test, DEV-3 accepted (R19 amended).
+Status: draft 3 (2026-11-03) — DEV-1 accepted, DEV-2 decided by test, DEV-3 accepted;
+translation switched to whole-value path detection (R18/R19/R23 amended); open items resolved.
 Sources: `VISION.md` (Vn), `REQUIREMENTS.md` (Rn, Qn), and lessons from the proof-of-concept
 wrappers `../claude-wsl` and `../codex-wsl` (marked **[POC]**).
 Where this spec deviates from a requirement, the deviation is listed in §16 and marked **[DEV-n]**.
@@ -23,8 +24,8 @@ Zed (Windows)                agent-relay-<agent>.exe (Windows)            WSL di
 The relay:
 1. selects a project configuration from its Windows launch directory;
 2. starts the agent through `wsl.exe` with an explicit Linux working directory;
-3. relays newline-delimited JSON in both directions, translating only known path fields between
-   Windows and Linux form;
+3. relays newline-delimited JSON in both directions, translating string values that are entirely
+   a path under a configured mapping, between Windows and Linux form;
 4. passes the child's exit code through.
 
 It never mounts, copies, or synchronizes files (V13, R35). Isolation is the user's WSL setup (V4).
@@ -53,7 +54,7 @@ It never mounts, copies, or synchronizes files (V13, R35). Isolation is the user
 | Project | One entry of `projects[]`, selected by launch dir. |
 | Effective config | Merge of `defaults` → project → project agent section (§5.3). |
 | Mapping | A pair (`windows`, `linux`) of directory roots. |
-| Rules | Per-agent class declaring path fields, opaque fields, key-path containers, `ShouldTranslate`. |
+| Rules | Per-agent class declaring opaque fields, `ShouldTranslate`, default Windows executable. |
 | Mode | How the relay runs when no project matches: `wsl`, `windows`, `none` (§5.4). |
 | Line | Bytes between `\n` (0x0A) separators on a protocol stream. |
 
@@ -113,12 +114,9 @@ abstract class AgentRules
     public abstract string DefaultWindowsExecutable { get; }  // for mode "windows" (§5.4)
     // true → protocol translation enabled for this invocation; false → pure passthrough
     public abstract bool ShouldTranslate(string[] args);
-    // string values under these member names are paths (also each string in an array value)
-    public abstract bool IsPathField(string name, string parentName);
-    // member value (and everything under it) is never translated
+    // member value (and everything under it) is never translated: free text, file content,
+    // commands, diffs, tool output
     public abstract bool IsOpaqueField(string name, string parentName);
-    // object whose *keys* are paths (Codex "projects"); empty for Claude
-    public virtual bool IsPathKeyContainer(string name, string parentName) { return false; }
 }
 ```
 
@@ -235,14 +233,14 @@ Applies only when **no project matches** the launch dir. It does not affect matc
 |---|---|
 | `"none"` (default, also when `defaults` is absent) | Do not run the agent. stderr: `agent-relay-<agent>: no project in <config> matches <launchDir> (defaults.mode is "none")`, exit 1. Same as POC behavior and R15/R16. |
 | `"wsl"` | Run in WSL using automount mapping. Synthesized project: `linuxRoot` = `<automountRoot>/<drive-lowercase>/<rest with />`, e.g. `C:\Users\me\x` → `/mnt/c/Users/me/x`. All other fields (`distribution`, `pathMappings`, `env`, `log`, `agents`) come from `defaults`. Translation mapping = one mapping per drive letter `X:\` ↔ `<automountRoot>/x` plus `defaults.pathMappings` (longest prefix still wins). UNC launch dir → error, exit 1. **Requires automount enabled** — the README must state this mode trades V3 isolation for convenience. |
-| `"windows"` | Run the agent natively on Windows, no WSL. Only `defaults.agents.<name>` (`executable`, `env`, `log`) and `defaults.log`/`defaults.env` matter; other fields ignored. Executable: `defaults.agents.<name>.executable`, else `rules.DefaultWindowsExecutable` (`claude.exe` / `codex.exe`) resolved via Windows `PATH` (`.exe` only). No path translation (pure passthrough, like `ShouldTranslate=false`). |
+| `"windows"` | Run the agent natively on Windows, no WSL. Only `defaults.agents.<name>` (`executable`, `env`, `log`) and `defaults.log`/`defaults.env` matter; other fields ignored. Executable: `defaults.agents.<name>.executable`, else `rules.DefaultWindowsExecutable` — the agent's standard Windows install location (§8.3, §8.4), with `%VAR%` expanded; missing file → error naming the path and suggesting `defaults.agents.<name>.executable`. No path translation (pure passthrough, like `ShouldTranslate=false`). |
 
 Rationale and constraints for `windows` mode:
 - **[POC]** `claude-wsl` native mode needed `cmd.exe` for npm `.cmd` shims; R6 forbids `cmd.exe`.
   Therefore only `.exe` targets are allowed; `.cmd`/`.bat` → config error naming the file and asking
   for the real `.exe` path.
 - Guard: if the resolved executable is the relay itself (same full path, or file name starts with
-  `agent-relay-`), error — prevents infinite self-launch when the relay is on `PATH`.
+  `agent-relay-`), error — prevents infinite self-launch.
 - **[POC]** A Windows Claude stores sessions on the Windows side; if Zed sets
   `CLAUDE_CONFIG_DIR` to the WSL path, the Windows agent inherits it. The README must explain this.
 
@@ -390,16 +388,30 @@ A hand-written tokenizer over the decoded line (POC Claude design):
   decoder), passed to the mapper, and re-encoded only if changed, using a minimal encoder that
   escapes `"`, `\` and U+0000–U+001F only. (JavaScriptSerializer.Serialize would turn `&`, `'`,
   `<`, `>` into `\u00XX`.)
-- Context tracked per value: current member name, parent member name, opaque flag.
-- A string value is translated iff not opaque and `rules.IsPathField(name, parent)`; arrays inherit
-  the member name so `"paths":["…","…"]` works.
-- An object member listed by `rules.IsPathKeyContainer(name, parent)` has its **keys** translated
-  (their values are walked normally). **[DEV-3, accepted; R19 amended]** Keys are translated only
-  when they represent paths, i.e. inside a rule-declared path-key container. Example: Codex sends
-  `config.projects` keyed by project path (`{"C:\\…":{"trust_level":"trusted"}}`), and the trust
-  setting must reach Codex under the Linux path. All other keys are never translated. Claude
-  declares no containers.
-- Opaque members (`rules.IsOpaqueField`) are copied verbatim with all descendants.
+- Context tracked per value: current member name, parent member name, opaque flag. Arrays inherit
+  the member name of the array.
+- **Whole-value path detection.** Every string value — and every object key — outside opaque
+  members is offered to PathMapper. It is translated only if the *entire* string is a path under a
+  mapped root (§8.1: starts with the root, followed by end-of-string or a separator). Strings that
+  merely *contain* a path (`"Edit C:\\app\\x.cs"`, `file:///…` URIs, `cd /mnt/c/app && make`)
+  never match, because they don't start with a root. No field list is needed, so new path fields
+  added by future agent versions are translated automatically.
+- **Keys** follow the same rule. **[DEV-3, accepted; R19 amended]** Keys are translated only when
+  they represent paths, i.e. the whole key is a mapped path. Example: Codex sends `config.projects`
+  keyed by project path (`{"C:\\…":{"trust_level":"trusted"}}`), and the trust setting must reach
+  Codex under the Linux path.
+- Opaque members (`rules.IsOpaqueField`) are copied verbatim with all descendants. This denylist
+  protects content where a string that is *exactly* a path must stay as written: free text,
+  file bodies, edit strings, commands, diffs, tool output.
+- Diagnostics: with logging on, every translation records `field=<member name>` in the log, so new
+  fields being translated are visible.
+
+Why a denylist instead of an allowlist of path fields: an allowlist misses new path fields silently
+(paths leak to the editor in Linux form, e.g. files that won't open from the agent panel). A
+denylist can only miss in the rare case where an unknown *content* field holds a value that is
+exactly a mapped path — then that value is shown in Windows form, which is still the same file.
+The Codex POC used this approach (all strings starting with a mapped root) and worked; the Claude
+POC used an allowlist.
 - Whole line must be exactly one JSON value plus whitespace; otherwise FormatException.
 
 Error handling (R21): any exception → forward the **original** line bytes, log
@@ -412,46 +424,43 @@ Error handling (R21): any exception → forward the **original** line bytes, log
 Otherwise passthrough. **[POC]** `claude auth status --json` etc. produced ~570 false
 `TRANSLATION ERROR` entries in the POC log.
 
-Path fields (from POC + captured log):
-`cwd`, `original_cwd`, `path`, `paths`, `file_path`, `file_paths`, `filePath`, `directory`,
-`directories`, `directory_path`, `directoryPath`, `root_path`, `rootPath`, `working_directory`,
-`workingDirectory`, `additionalDirectories`, `transcript_path`, `persistedOutputPath`,
-`user_output_styles_dir`.
-(Paths under `~/.claude` stay unmapped and therefore unchanged.)
+Path fields seen in the captured log (translated automatically, listed for tests only):
+`cwd`, `original_cwd`, `path`, `file_path`, `filePath`, `transcript_path`, `persistedOutputPath`,
+`user_output_styles_dir`. Paths under `~/.claude` are unmapped and therefore unchanged.
 
 Opaque fields: `text`, `old_string`, `new_string`, `command`, `partial_json`, `stdout`, `stderr`,
 `content` **except** when `parent == "message"` (so `message.content[]` blocks are walked and
 `tool_use.input.file_path` is translated, but `tool_use.input.content` — file bodies — and
 `tool_result.content` stay untouched).
 
-Path key containers: none.
-
-`DefaultWindowsExecutable`: `claude.exe`.
+`DefaultWindowsExecutable`: `%USERPROFILE%\.local\bin\claude.exe` (Claude Code native
+installer location).
 
 ### 8.4 Codex rules (R23)
 
 `ShouldTranslate(args)`: true iff `args` contains `app-server`. Otherwise passthrough
 (`codex --version`, `codex login status`).
 
-Path fields — from captured `codex app-server` traffic (Zed 1.26.2, 2026-11-01):
-`cwd`, `cwds`, `path`, `runtimeWorkspaceRoots`, `file` (config layer source file).
-Path key containers: `projects` (under `config`, `thread/start`/`thread/resume` params and
-`config/read` results).
+Path fields seen in captured `codex app-server` traffic (Zed 1.26.2, 2026-11-01; translated
+automatically, listed for tests only): `cwd`, `cwds`, `path`, `runtimeWorkspaceRoots`, and the keys
+of `projects`.
 
 Opaque fields: `aggregatedOutput`, `text`, `delta`, `command`, `diff`, `unifiedDiff`, `content`,
 `output`, `stdout`, `stderr`, `summary`, `message`, `instructions`, `baseInstructions`,
 `developerInstructions`.
 
-**[POC]** The Codex POC replaced every JSON string starting with a mapped root, including prose
-and command output (forbidden by R19/R23), and had `--cd` commented out. A captured
+**[POC]** The Codex POC replaced every JSON string starting with a mapped root (kept, §8.2), but
+also inside command output and text (now excluded by the opaque list), and had `--cd` commented
+out. A captured
 `runtimeWorkspaceRoots` value `"/mnt/c/…/funspintest/C:\\Users\\…"` shows the failure mode of an
 untranslated Windows path being resolved relative to a Linux cwd — this becomes a regression test.
 
-The capture covers only session start/resume. Before release, capture a session with tool calls,
-file edits, approvals (`item/*`, `*/requestApproval`) and extend the list; the README records the
-Codex version the list was taken from. The list is data in `CodexRules.cs`, nothing else changes.
+The opaque list is a starting point: review it against a captured session with tool calls,
+edits and approvals (see TODO.md). It is data in `CodexRules.cs`; nothing else changes.
 
-`DefaultWindowsExecutable`: `codex.exe`.
+`DefaultWindowsExecutable`: npm global install location
+`%APPDATA%\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe`
+(the native binary behind the `codex.cmd` shim). To be verified on a Windows install (TODO.md).
 
 ---
 
@@ -567,12 +576,12 @@ matching tests.
 | ID | Area | Cases |
 |---|---|---|
 | T-Q | Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; round-trip through a `CommandLineToArgvW` P/Invoke on Windows (skipped under mono) |
-| T-C | Config | missing file, bad JSON, unknown field (`logEnabled`), wrong types, relative/`/` linux roots, invalid windows roots, duplicate roots (case), missing agent executable, `.cmd` in windows mode, `projects` empty with mode none |
+| T-C | Config | missing file, bad JSON, unknown field (`logEnabled`), wrong types, relative/`/` linux roots, invalid windows roots, duplicate roots (case), missing agent executable, `.cmd` in windows mode, default Windows executable expansion + missing-file error, `projects` empty with mode none |
 | T-M | Merge | defaults→project→agent precedence, env null removal, log field merge, mapping concat + duplicates |
 | T-S | Selection | exact root, subdir, case-insensitive, `app` vs `app-other`, nested projects longest wins, drive root `C:\`, UNC, no match → each mode |
 | T-P | Mapping | both directions, custom mappings, longest prefix, `C:` root → `C:\`, `/mnt/cat` vs `/mnt/c`, Linux case-sensitivity, `/` separators in Windows input, multi-line strings untouched, Unicode (`café.txt`) |
 | T-W | Walker | byte identity for untouched lines, whitespace preserved, `9007199254740993` exact, escapes (`\u00e9`, `\/`) preserved when untouched, minimal re-encoding, invalid JSON → original line, trailing garbage, empty line |
-| T-R | Rules | Claude: `message.content[].input.file_path` translated, `input.content`/`new_string`/`text` untouched, `{"content":{"path":…}}` untouched, `ShouldTranslate` with/without `stream-json`. Codex: `cwd`, `cwds[]`, `projects` keys, `aggregatedOutput` untouched, prose containing a path untouched, `ShouldTranslate` |
+| T-R | Rules | Whole-value detection: unknown field `"someNewField":"C:\\app\\x"` translated; key equal to a mapped path translated, other keys untouched; strings containing (not equal to) a path untouched; `file:///` URI untouched. Claude: `message.content[].input.file_path` translated, `input.content`/`new_string`/`text` untouched even when exactly a path, `{"content":{"path":…}}` untouched, `ShouldTranslate` with/without `stream-json`. Codex: `cwd`, `cwds[]`, `projects` keys, `aggregatedOutput` untouched, `ShouldTranslate` |
 | T-F | Past failures | POC self-test vectors (both); `auth status --json` passthrough; `-d "DenwAP74"` regression (distro unquoted); `runtimeWorkspaceRoots` corrupted-path case never produced by translation; wsl.exe UTF-16 error text not emitted as protocol (WSL_UTF8 set in LaunchSpec env) |
 | T-A | Args | `--relay-version`, `--relay-self-test`, unknown `--relay-x` error, `--version` forwarded |
 | T-L* | Launch spec | exact `wsl.exe` argument string for: no env, env, spaces in cwd, mode wsl, mode windows; masking in logged command line |
@@ -659,10 +668,10 @@ README sections:
 | DEV-1 | Q2 default modes `wsl` (automount mapping) and `windows` (native) relax R6/R15 for unmatched launch dirs only. | Accepted. |
 | DEV-2 | `--exec` (variant A) vs `--` + single-quoting (variant B) in the wsl.exe command line (§7.1). | Decided by test T-L7; R6 updated afterwards. |
 | DEV-3 | Object keys that represent paths (rule-declared key containers, e.g. Codex `projects`) are translated. | Accepted; R19 amended. |
-| OI-1 | Codex path/opaque field list is from a start/resume capture only. | Capture a full session before release. |
-| OI-2 | Exact Zed `agent_servers` entry for Codex through the relay. | Verify and document. |
-| OI-3 | Mode `windows` default executable lookup = `PATH` `.exe` only; npm `.cmd` installs need an explicit `.exe` path. | Confirm acceptable. |
-| OI-4 | Resumed Claude history shows Linux paths (adapter reads `.jsonl` directly). Translating transcripts would require writing files — out of scope (V13). | Accepted limitation. |
+| OI-1 | Path detection by field list vs by value. | Resolved: whole-value detection + opaque denylist (§8.2); R18/R19/R23 amended. Opaque lists reviewed against a full capture (TODO.md). |
+| OI-2 | Zed `agent_servers` entry for Codex. | Resolved: configured in global Zed `settings.json` and working with the POC; copy into README (TODO.md). |
+| OI-3 | Mode `windows` default executable. | Resolved: each agent's standard Windows install path (§8.3, §8.4); Codex path to be verified (TODO.md). |
+| OI-4 | Resumed Claude history shows Linux paths (adapter reads `.jsonl` directly). Translating transcripts would require writing files — out of scope (V13). | Accepted limitation; README note in TODO.md. |
 
 ---
 

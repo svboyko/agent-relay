@@ -26,12 +26,12 @@
 
 ## Translation
 - **R17:** Mappings = project root pair + `pathMappings`. Bidirectional, longest prefix, boundary-aware. Win compare case-insensitive, Linux case-sensitive. Unmapped → unchanged. (V9, V13)
-- **R18:** Shared JSON walker in core. Per-agent rules: path fields, path-key containers, opaque fields, `ShouldTranslate(args)`. (V9, V14)
-- **R19:** Translate only string values of rule path fields, and object keys that represent paths (keys of rule path-key containers, e.g. Codex `projects`). Never: other keys, numbers, text, file content, commands, diffs, URIs. (V9)
+- **R18:** Shared JSON walker in core. Per-agent rules: opaque fields, `ShouldTranslate(args)`. (V9, V14)
+- **R19:** Translate a string value or object key only if the whole string is a path under a mapped root (keys that represent paths, e.g. Codex `projects`). Never: opaque fields (text, file content, commands, diffs, tool output), strings that merely contain a path, URIs, numbers. (V9)
 - **R20:** Untouched tokens byte-identical; big numeric IDs exact. (V9)
 - **R21:** Parse/translate error → forward original line, log error. Never drop a line. (V9, V10)
 - **R22:** Claude: translate only if args contain `stream-json`; else passthrough. (V9)
-- **R23:** Codex: path-field list taken from captured real traffic. No blanket prefix replace. (V9)
+- **R23:** Codex: opaque-field list reviewed against captured real traffic. Path detection by whole value (R19), no substring replace. (V9)
 
 ## Relay
 - **R24:** stdin → child, child stdout → stdout: line-framed UTF-8, no BOM, `\n`, flush per line. (V10)
