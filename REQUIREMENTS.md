@@ -26,8 +26,8 @@
 
 ## Translation
 - **R17:** Mappings = project root pair + `pathMappings`. Bidirectional, longest prefix, boundary-aware. Win compare case-insensitive, Linux case-sensitive. Unmapped → unchanged. (V9, V13)
-- **R18:** Shared JSON walker in core. Per-agent rules: path fields, opaque fields, `ShouldTranslate(args)`. (V9, V14)
-- **R19:** Translate only string values of rule path fields. Never: keys, numbers, text, file content, commands, diffs, URIs. (V9)
+- **R18:** Shared JSON walker in core. Per-agent rules: path fields, path-key containers, opaque fields, `ShouldTranslate(args)`. (V9, V14)
+- **R19:** Translate only string values of rule path fields, and object keys that represent paths (keys of rule path-key containers, e.g. Codex `projects`). Never: other keys, numbers, text, file content, commands, diffs, URIs. (V9)
 - **R20:** Untouched tokens byte-identical; big numeric IDs exact. (V9)
 - **R21:** Parse/translate error → forward original line, log error. Never drop a line. (V9, V10)
 - **R22:** Claude: translate only if args contain `stream-json`; else passthrough. (V9)

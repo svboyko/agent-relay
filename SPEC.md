@@ -1,6 +1,6 @@
 # Agent Relay — Specification
 
-Status: draft 1 (2026-11-03).
+Status: draft 2 (2026-11-03) — DEV-1 accepted, DEV-2 decided by test, DEV-3 accepted (R19 amended).
 Sources: `VISION.md` (Vn), `REQUIREMENTS.md` (Rn, Qn), and lessons from the proof-of-concept
 wrappers `../claude-wsl` and `../codex-wsl` (marked **[POC]**).
 Where this spec deviates from a requirement, the deviation is listed in §16 and marked **[DEV-n]**.
@@ -246,8 +246,8 @@ Rationale and constraints for `windows` mode:
 - **[POC]** A Windows Claude stores sessions on the Windows side; if Zed sets
   `CLAUDE_CONFIG_DIR` to the WSL path, the Windows agent inherits it. The README must explain this.
 
-**[DEV-1]** R6 ("no native mode") and R15 ("no `/mnt/<drive>` fallback") stay true for matched
-projects; the Q2 answer adds opt-in fallbacks for unmatched launch dirs only.
+**[DEV-1, accepted]** R6 ("no native mode") and R15 ("no `/mnt/<drive>` fallback") stay true for
+matched projects; the Q2 answer adds opt-in fallbacks for unmatched launch dirs only.
 
 ### 5.5 Validation (R14) — all at start, before any child starts
 
@@ -316,11 +316,17 @@ WorkingDirectory: launch dir
 - No `cmd.exe`, no native fallback, no Windows `PATH` lookups inside WSL (R6, R7). Works with
   `automount.enabled=false` and `interop.enabled=false`.
 
-**[DEV-2]** R6 specifies `-- [env …]`. `wsl.exe <args> -- <cmd>` passes the command line to the
-distribution's default shell, so `$`, `;`, `` ` ``, `|`, `*` in agent arguments (prompts, JSON
-settings) would be expanded. `--exec` runs the program without a shell, which is what R9 requires.
-Must be verified on the target Windows build (test T-L7 in §13); if `--exec` and `--cd` cannot be
-combined there, fall back to `--` with POSIX single-quote escaping of every token.
+**[DEV-2, decided by test]** Two candidate command-line forms; the test T-L7 (§13.4) picks one:
+
+| Variant | Command line | Argument safety |
+|---|---|---|
+| A (preferred) | `-d <d> --cd <cwd> --exec env [K=V…] <exe> <args…>` | No shell; args arrive literally. |
+| B (R6 as written) | `-d <d> --cd <cwd> -- env [K=V…] <exe> <args…>` | If `--` goes through the default shell, every token is additionally POSIX single-quoted (`'…'`, `'` → `'\''`). |
+
+Selection rule: use A if T-L7 passes with A (literal `$HOME;x`, `--cd` honored, env set);
+otherwise B with single-quoting, and B must pass the same test. The form is built in one function
+(`LaunchSpec.BuildWslArguments`), so switching is a one-place change. The chosen variant and the
+Windows/WSL version it was verified on are recorded in the README; R6 is updated to match.
 
 ### 7.2 Windows launch (mode `windows`)
 
@@ -388,10 +394,11 @@ A hand-written tokenizer over the decoded line (POC Claude design):
 - A string value is translated iff not opaque and `rules.IsPathField(name, parent)`; arrays inherit
   the member name so `"paths":["…","…"]` works.
 - An object member listed by `rules.IsPathKeyContainer(name, parent)` has its **keys** translated
-  (their values are walked normally). **[DEV-3]** R19 says keys are never translated; Codex sends
+  (their values are walked normally). **[DEV-3, accepted; R19 amended]** Keys are translated only
+  when they represent paths, i.e. inside a rule-declared path-key container. Example: Codex sends
   `config.projects` keyed by project path (`{"C:\\…":{"trust_level":"trusted"}}`), and the trust
-  setting must reach Codex under the Linux path. Key translation is opt-in per rules; Claude has
-  none.
+  setting must reach Codex under the Linux path. All other keys are never translated. Claude
+  declares no containers.
 - Opaque members (`rules.IsOpaqueField`) are copied verbatim with all descendants.
 - Whole line must be exactly one JSON value plus whitespace; otherwise FormatException.
 
@@ -586,8 +593,9 @@ line intact; log failure (log path is a directory) → one warning, relay contin
 
 ### 13.4 Manual verification (README checklist)
 
-T-L7: on Windows with the real distro: `wsl.exe -d <d> --cd <dir> --exec env A=1 printenv A`;
-agent args containing `$HOME;x` arrive literally. Zed: start thread, run a tool, edit a file,
+T-L7 (decides DEV-2): on Windows with the real distro, for variant A and then variant B (§7.1):
+`env A=1` is visible to the child, `--cd <dir>` is the child's cwd, and args `$HOME;x`, `a b`,
+`it's`, `"q"`, `*`, `` `id` ``, `café` arrive literally (check with a tiny script printing argv). Zed: start thread, run a tool, edit a file,
 approve a permission, resume a thread, close Zed — for both agents.
 
 ---
@@ -648,9 +656,9 @@ README sections:
 
 | ID | Item | Status |
 |---|---|---|
-| DEV-1 | Q2 default modes `wsl` (automount mapping) and `windows` (native) relax R6/R15 for unmatched launch dirs only. | Per Q2 answer; confirm. |
-| DEV-2 | `--exec` instead of `--` in the wsl.exe command line to avoid shell expansion of agent args. | Needs T-L7 on Windows. |
-| DEV-3 | Codex `projects` object keys are translated (rule-declared key containers), contrary to R19 "never keys". | Confirm. |
+| DEV-1 | Q2 default modes `wsl` (automount mapping) and `windows` (native) relax R6/R15 for unmatched launch dirs only. | Accepted. |
+| DEV-2 | `--exec` (variant A) vs `--` + single-quoting (variant B) in the wsl.exe command line (§7.1). | Decided by test T-L7; R6 updated afterwards. |
+| DEV-3 | Object keys that represent paths (rule-declared key containers, e.g. Codex `projects`) are translated. | Accepted; R19 amended. |
 | OI-1 | Codex path/opaque field list is from a start/resume capture only. | Capture a full session before release. |
 | OI-2 | Exact Zed `agent_servers` entry for Codex through the relay. | Verify and document. |
 | OI-3 | Mode `windows` default executable lookup = `PATH` `.exe` only; npm `.cmd` installs need an explicit `.exe` path. | Confirm acceptable. |
@@ -666,7 +674,7 @@ README sections:
 | R2 | 4.2 | R16 | 5.7 | R30 | 11.1 |
 | R3 | 3 | R17 | 8.1 | R31 | 11.2 |
 | R4 | 4.1 | R18 | 3.1, 8.2 | R32 | 11.3 |
-| R5 | 3 | R19 | 8.2 (DEV-3) | R33 | 11.4 |
+| R5 | 3 | R19 | 8.2 | R33 | 11.4 |
 | R6 | 7.1 (DEV-1, DEV-2) | R20 | 8.2 | R34 | 11.5 |
 | R7 | 7.1 | R21 | 8.2 | R35 | 12 |
 | R8 | 7.1 | R22 | 8.3 | R36 | 12, 14 |
