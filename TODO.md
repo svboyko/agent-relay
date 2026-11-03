@@ -21,5 +21,7 @@
       `%USERPROFILE%\.local\bin\claude.exe` and the Codex npm path
       `%APPDATA%\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe` on a real
       Windows install. (SPEC §5.4, OI-3)
+- [ ] **Job object teardown:** when the relay's job object kills `wsl.exe`, check that the Linux agent process
+      also ends (`ps` in the distro). (SPEC §10)
 - [ ] **wsl.exe command-line form** (`--exec` vs `--`): run test T-L7 on Windows, pick the variant, update
       R6 and the README. (SPEC §7.1, DEV-2)

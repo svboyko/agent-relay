@@ -1,7 +1,8 @@
 # Agent Relay — Specification
 
-Status: draft 3 (2026-11-03) — DEV-1 accepted, DEV-2 decided by test, DEV-3 accepted;
-translation switched to whole-value path detection (R18/R19/R23 amended); open items resolved.
+Status: draft 4 (2026-11-03) — design decisions made (DEV-1, DEV-3 accepted; translation by
+mapped-prefix path detection, R18/R19/R23 amended). Pending verification on Windows: DEV-2 command-line
+form, opaque-field review, default Windows executable paths (see §16 and `TODO.md`).
 Sources: `VISION.md` (Vn), `REQUIREMENTS.md` (Rn, Qn), and lessons from the proof-of-concept
 wrappers `../claude-wsl` and `../codex-wsl` (marked **[POC]**).
 Where this spec deviates from a requirement, the deviation is listed in §16 and marked **[DEV-n]**.
@@ -177,7 +178,8 @@ tests in WSL with mono. Final builds are manual on Windows. Tests that need `wsl
     "env": { "NAME": "value" },
     "log": { "enabled": false, "path": "agent-relay-<agent>.log", "maxSizeMB": 10 },
     "agents": {
-      "claude": { "executable": "/home/me/.local/bin/claude", "env": {}, "log": {} },
+      "claude": { "executable": "/home/me/.local/bin/claude", "env": {}, "log": {},
+                  "windowsExecutable": "C:\\Users\\me\\.local\\bin\\claude.exe" },
       "codex":  { "executable": "/home/me/.local/bin/codex" }
     }
   },
@@ -210,7 +212,8 @@ Field types:
 | `log.enabled` | bool | |
 | `log.path` | string | Absolute Windows path, or relative to exe dir. Default `agent-relay-<agent>.log`. |
 | `log.maxSizeMB` | number > 0 | Default 10. |
-| `agents.<name>.executable` | string | WSL modes: absolute Linux path. Mode `windows`: absolute Windows path to an `.exe`. |
+| `agents.<name>.executable` | string | Always an absolute Linux path (WSL launch). Allowed in `defaults.agents` and `projects[].agents`. |
+| `agents.<name>.windowsExecutable` | string | Absolute Windows path to an `.exe` (`%VAR%` expanded). Allowed **only** in `defaults.agents`; used only by mode `windows`. |
 
 ### 5.3 Merge (effective config)
 
@@ -222,7 +225,9 @@ project, project wins over defaults) (R13).
 - `log`: merged per field.
 - `pathMappings`: concatenated (defaults first, then project). Duplicate Windows roots or duplicate
   Linux roots after normalization → error.
-- `agents.<name>.executable`: from `project.agents.<name>`, else `defaults.agents.<name>`.
+- `agents.<name>.executable`: from `project.agents.<name>`, else `defaults.agents.<name>`. It is
+  always a Linux path, so a WSL project can never inherit a Windows executable.
+- `agents.<name>.windowsExecutable` is never merged into projects; only mode `windows` reads it.
 - `defaults.agents.<name>.env/log` apply between `defaults` and project level.
 
 ### 5.4 Default mode (Q2 answer)
@@ -233,7 +238,7 @@ Applies only when **no project matches** the launch dir. It does not affect matc
 |---|---|
 | `"none"` (default, also when `defaults` is absent) | Do not run the agent. stderr: `agent-relay-<agent>: no project in <config> matches <launchDir> (defaults.mode is "none")`, exit 1. Same as POC behavior and R15/R16. |
 | `"wsl"` | Run in WSL using automount mapping. Synthesized project: `linuxRoot` = `<automountRoot>/<drive-lowercase>/<rest with />`, e.g. `C:\Users\me\x` → `/mnt/c/Users/me/x`. All other fields (`distribution`, `pathMappings`, `env`, `log`, `agents`) come from `defaults`. Translation mapping = one mapping per drive letter `X:\` ↔ `<automountRoot>/x` plus `defaults.pathMappings` (longest prefix still wins). UNC launch dir → error, exit 1. **Requires automount enabled** — the README must state this mode trades V3 isolation for convenience. |
-| `"windows"` | Run the agent natively on Windows, no WSL. Only `defaults.agents.<name>` (`executable`, `env`, `log`) and `defaults.log`/`defaults.env` matter; other fields ignored. Executable: `defaults.agents.<name>.executable`, else `rules.DefaultWindowsExecutable` — the agent's standard Windows install location (§8.3, §8.4), with `%VAR%` expanded; missing file → error naming the path and suggesting `defaults.agents.<name>.executable`. No path translation (pure passthrough, like `ShouldTranslate=false`). |
+| `"windows"` | Run the agent natively on Windows, no WSL. Only `defaults.agents.<name>` (`windowsExecutable`, `env`, `log`) and `defaults.log`/`defaults.env` matter; other fields (including `executable`) are ignored. Executable: `defaults.agents.<name>.windowsExecutable`, else `rules.DefaultWindowsExecutable` — the agent's standard Windows install location (§8.3, §8.4), with `%VAR%` expanded; missing file → error naming the path and suggesting `defaults.agents.<name>.windowsExecutable`. No path translation (pure passthrough, like `ShouldTranslate=false`). |
 
 Rationale and constraints for `windows` mode:
 - **[POC]** `claude-wsl` native mode needed `cmd.exe` for npm `.cmd` shims; R6 forbids `cmd.exe`.
@@ -259,7 +264,9 @@ matched projects; the Q2 answer adds opt-in fallbacks for unmatched launch dirs 
 7. Agent section: for the selected project (or mode `wsl`), an `executable` for **this** agent must
    resolve; missing → `agent-relay-claude: project C:\… has no agents.claude.executable`.
    Other agents' sections are validated for shape only.
-8. Mode `windows`: executable exists (`File.Exists`) and ends with `.exe`.
+8. Mode `windows`: resolved `windowsExecutable` exists (`File.Exists`) and ends with `.exe`.
+9. `executable` that is not an absolute Linux path (e.g. `C:\…`) → error; `windowsExecutable`
+   outside `defaults.agents` → error.
 
 Structural errors anywhere in the file fail every invocation (a broken config should be noticed
 immediately, not only when a certain project is opened).
@@ -368,7 +375,7 @@ Windows→Linux (`toLinux`):
 4. Result = `linux` + suffix with `\`→`/`.
 
 Linux→Windows (`toWindows`):
-1. Skip unless value starts with `/`, or contains `\r`/`\n`.
+1. Skip if value contains `\r` or `\n`, or does not start with `/`.
 2. Longest `linux` root with value == root or startsWith `root + "/"` (ordinal, case-sensitive).
 3. Result = `windows` + suffix with `/`→`\`; a bare drive result `C:` becomes `C:\`.
 
@@ -390,39 +397,51 @@ A hand-written tokenizer over the decoded line (POC Claude design):
   `<`, `>` into `\u00XX`.)
 - Context tracked per value: current member name, parent member name, opaque flag. Arrays inherit
   the member name of the array.
-- **Whole-value path detection.** Every string value — and every object key — outside opaque
-  members is offered to PathMapper. It is translated only if the *entire* string is a path under a
-  mapped root (§8.1: starts with the root, followed by end-of-string or a separator). Strings that
-  merely *contain* a path (`"Edit C:\\app\\x.cs"`, `file:///…` URIs, `cd /mnt/c/app && make`)
-  never match, because they don't start with a root. No field list is needed, so new path fields
-  added by future agent versions are translated automatically.
-- **Keys** follow the same rule. **[DEV-3, accepted; R19 amended]** Keys are translated only when
-  they represent paths, i.e. the whole key is a mapped path. Example: Codex sends `config.projects`
-  keyed by project path (`{"C:\\…":{"trust_level":"trusted"}}`), and the trust setting must reach
-  Codex under the Linux path.
+- **Mapped-prefix detection.** Every string value — and every object key — outside opaque members
+  is offered to PathMapper. It is translated if the string *starts with* a mapped root followed by
+  end-of-string or a separator (§8.1). This is a heuristic, not proof that the string is a path:
+  - Strings that merely *contain* a path later in the text (`"Edit C:\\app\\x.cs"`, `file:///…`
+    URIs, `cd /mnt/c/app && make`) never match.
+  - Strings that *start with* a path followed by prose (`"C:\\app\\file.txt is missing"`) do
+    match and are rewritten as a whole (`/mnt/c/…/file.txt is missing`), because paths may legally
+    contain spaces and the relay cannot tell where the path ends.
+  - No field list is needed, so new path fields added by future agent versions are translated
+    automatically.
+- **Keys** follow the same rule. **[DEV-3, accepted; R19 amended]** A key is translated only when it
+  starts with a mapped root, i.e. it represents a path; there is no per-agent key declaration.
+  Example: Codex sends `config.projects` keyed by project path
+  (`{"C:\\…":{"trust_level":"trusted"}}`), and the trust setting must reach Codex under the Linux
+  path.
 - Opaque members (`rules.IsOpaqueField`) are copied verbatim with all descendants. This denylist
-  protects content where a string that is *exactly* a path must stay as written: free text,
+  protects content that must stay as written even when it starts with a mapped path: free text,
   file bodies, edit strings, commands, diffs, tool output.
 - Diagnostics: with logging on, every translation records `field=<member name>` in the log, so new
   fields being translated are visible.
+- Whole line must be exactly one JSON value plus whitespace; otherwise FormatException.
 
-Why a denylist instead of an allowlist of path fields: an allowlist misses new path fields silently
-(paths leak to the editor in Linux form, e.g. files that won't open from the agent panel). A
-denylist can only miss in the rare case where an unknown *content* field holds a value that is
-exactly a mapped path — then that value is shown in Windows form, which is still the same file.
-The Codex POC used this approach (all strings starting with a mapped root) and worked; the Claude
-POC used an allowlist.
+Why a denylist instead of an allowlist of path fields:
+- An allowlist misses new path fields silently: paths leak to the editor in Linux form (e.g. files
+  that won't open from the agent panel).
+- A denylist misses new *content* fields: if an unknown content field holds a string starting with
+  a mapped path, it is rewritten. This is not only cosmetic. In the editor→agent direction it can
+  change data the agent acts on (e.g. text the agent later writes to a file); in the agent→editor
+  direction it changes what the editor stores or sends back. This is a known gap in V9's
+  preservation guarantee, accepted in exchange for automatic coverage of new path fields.
+- Mitigation: opaque lists cover all content fields seen in captured traffic of each agent; the
+  `field=` log diagnostics expose newly translated fields; reviewing them against a full captured
+  session is a release check (`TODO.md`).
+The Codex POC used this approach (all strings starting with a mapped root, no opaque list) and
+worked in the captured sessions; the Claude POC used an allowlist.
 
-Why whole-value and not substring replacement (decision, 2026-11-03): replacing mapped paths
-*inside* strings (`"Open file C:\\app\\x.cs"`) was considered and rejected:
+Why mapped-prefix and not substring replacement (decision, 2026-11-03): replacing mapped paths
+*anywhere inside* strings (`"Open file C:\\app\\x.cs"`) was considered and rejected:
 
 1. **File corruption.** Edits travel as strings (`old_string`/`new_string`, diffs, file content,
    commands). If a file contains a mapped path, a rewritten `old_string` no longer matches (edit
    fails) and a rewritten `new_string` writes a Linux path into a Windows file.
 2. **No reliable path end in free text.** Paths may contain spaces, dots, quotes and brackets
    (`"Open C:\\My Files\\a.txt and b.txt"`). The suffix must be converted too (`\` ↔ `/`); a wrong
-   guess produces half-converted values like `/mnt/c/app\src\x.cs` (cf. the POC
-   `runtimeWorkspaceRoots` corruption).
+   guess produces half-converted values like `/mnt/c/app\src\x.cs`.
 3. **Streaming chunks.** Agent text arrives in deltas; one path can be split across two chunks
    (`"…/mnt/c/Us"` + `"ers/…"`), so translation would be inconsistent.
 4. **User intent.** A prompt like "replace `C:\\app` with `D:\\data` in config.ini" means literal
@@ -438,7 +457,6 @@ files, are translated.
 Possible future opt-in (not in initial scope): Linux→Windows rewriting of mapped paths only in
 agent reply text shown to the user, never in the editor→agent direction and never in opaque
 fields such as edits and commands. It would still suffer from point 3.
-- Whole line must be exactly one JSON value plus whitespace; otherwise FormatException.
 
 Error handling (R21): any exception → forward the **original** line bytes, log
 `<direction> TRANSLATION ERROR: <message>`. Never drop or truncate a line.
@@ -477,9 +495,11 @@ Opaque fields: `aggregatedOutput`, `text`, `delta`, `command`, `diff`, `unifiedD
 
 **[POC]** The Codex POC replaced every JSON string starting with a mapped root (kept, §8.2), but
 also inside command output and text (now excluded by the opaque list), and had `--cd` commented
-out. A captured
-`runtimeWorkspaceRoots` value `"/mnt/c/…/funspintest/C:\\Users\\…"` shows the failure mode of an
-untranslated Windows path being resolved relative to a Linux cwd — this becomes a regression test.
+out. The captured log contains a `runtimeWorkspaceRoots` value `"/mnt/c/…/funspintest/C:\\Users\\…"`
+sent *by Codex* (Codex→Zed, response to request id 5). It looks like a Windows path joined to a
+Linux cwd, probably from state persisted during earlier POC runs; the log does not show its cause.
+It is used as a test vector only: the relay must forward such a value without making it worse, and
+correct launch (`--cd`) plus `cwd` translation must not produce new ones.
 
 The opaque list is a starting point: review it against a captured session with tool calls,
 edits and approvals (see TODO.md). It is data in `CodexRules.cs`; nothing else changes.
@@ -500,7 +520,12 @@ Three threads, all blocking reads (idle CPU ≈ 0, R29):
 | output | child stdout → relay stdout | `\n` lines | Linux→Windows |
 | error | child stderr → relay stderr | raw bytes, 8 KB buffer | none (R25) |
 
-Line pump rules:
+When `ShouldTranslate(args)` is false (passthrough: `claude auth status`, `codex --version`,
+interactive login prompts) or in mode `windows`, the input and output pumps are **raw byte
+pumps** like the error pump: every read chunk is written and flushed immediately, so prompts
+without a trailing newline are delivered at once. Line framing applies only when translating.
+
+Line pump rules (translation enabled):
 - Read raw bytes; split on 0x0A only; lines are unbounded (Codex `config/read` replies are large).
 - A line is decoded as strict UTF-8. Invalid UTF-8 or translation disabled → forward the original
   bytes unchanged.
@@ -514,9 +539,18 @@ Line pump rules:
 
 ## 10. Lifecycle and exit (V11, R27)
 
-1. Start child; start the three pumps. Input pump is a background thread.
-2. Relay stdin EOF → close child stdin (agent sees EOF and shuts down).
-3. Wait for child exit, then join output and error pumps (drain everything), then flush stdout.
+1. Start child inside a Windows **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+   (P/Invoke, kernel32). If the relay process dies or is killed by the editor, Windows closes the
+   job handle and terminates `wsl.exe` (or the Windows agent) — no orphaned children. Start the
+   three pumps. Input pump is a background thread.
+2. Relay stdin EOF → close child stdin. The relay does **not** kill the child on EOF: agents may
+   legitimately keep working after stdin EOF (e.g. a prompt piped to `claude -p` streams output for
+   minutes). A child that ignores EOF keeps running until it exits or the editor terminates the
+   relay; in the latter case the job object (step 1) terminates the child. The relay itself adds
+   no wait that the editor cannot end.
+3. Wait for child exit, then join output and error pumps with a **drain timeout of 2 s**. A
+   descendant process that inherited the pipes can keep them open after the child exits; after the
+   timeout the relay stops waiting, logs `drain timeout`, flushes stdout and exits.
 4. Exit with the child's exit code (including negative/large codes such as wsl.exe `-1`).
 5. Child exits while relay stdin is still open (Zed keeps it open) → do not wait for the input
    pump; process exits (background thread) — no hang.
@@ -524,7 +558,10 @@ Line pump rules:
 7. Relay stdout closed by parent (broken pipe) → output pump keeps draining child stdout to avoid
    child blocking, discards, logs once.
 8. Ctrl+C / console close: relay does not intercept; Windows delivers the event to the console
-   group, wsl.exe forwards termination. No extra kill logic initially.
+   group, wsl.exe forwards termination.
+9. To verify on Windows (`TODO.md`): when the job object terminates `wsl.exe`, the Linux agent
+   process also ends (WSL should tear down the session's processes when the `wsl.exe` client goes
+   away).
 
 ---
 
@@ -602,12 +639,12 @@ matching tests.
 | ID | Area | Cases |
 |---|---|---|
 | T-Q | Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; round-trip through a `CommandLineToArgvW` P/Invoke on Windows (skipped under mono) |
-| T-C | Config | missing file, bad JSON, unknown field (`logEnabled`), wrong types, relative/`/` linux roots, invalid windows roots, duplicate roots (case), missing agent executable, `.cmd` in windows mode, default Windows executable expansion + missing-file error, `projects` empty with mode none |
+| T-C | Config | Windows path in `executable` rejected, `windowsExecutable` outside `defaults.agents` rejected, missing file, bad JSON, unknown field (`logEnabled`), wrong types, relative/`/` linux roots, invalid windows roots, duplicate roots (case), missing agent executable, `.cmd` in windows mode, default Windows executable expansion + missing-file error, `projects` empty with mode none |
 | T-M | Merge | defaults→project→agent precedence, env null removal, log field merge, mapping concat + duplicates |
 | T-S | Selection | exact root, subdir, case-insensitive, `app` vs `app-other`, nested projects longest wins, drive root `C:\`, UNC, no match → each mode |
 | T-P | Mapping | both directions, custom mappings, longest prefix, `C:` root → `C:\`, `/mnt/cat` vs `/mnt/c`, Linux case-sensitivity, `/` separators in Windows input, multi-line strings untouched, Unicode (`café.txt`) |
 | T-W | Walker | byte identity for untouched lines, whitespace preserved, `9007199254740993` exact, escapes (`\u00e9`, `\/`) preserved when untouched, minimal re-encoding, invalid JSON → original line, trailing garbage, empty line |
-| T-R | Rules | Whole-value detection: unknown field `"someNewField":"C:\\app\\x"` translated; key equal to a mapped path translated, other keys untouched; strings containing (not equal to) a path untouched; `file:///` URI untouched. Claude: `message.content[].input.file_path` translated, `input.content`/`new_string`/`text` untouched even when exactly a path, `{"content":{"path":…}}` untouched, `ShouldTranslate` with/without `stream-json`. Codex: `cwd`, `cwds[]`, `projects` keys, `aggregatedOutput` untouched, `ShouldTranslate` |
+| T-R | Rules | Mapped-prefix detection: unknown field `"someNewField":"C:\\app\\x"` translated; key starting with a mapped path translated, other keys untouched; path later in a string untouched; `"C:\\app\\f.txt is missing"` rewritten as a whole (documented heuristic); `file:///` URI untouched. Claude: `message.content[].input.file_path` translated, `input.content`/`new_string`/`text` untouched even when exactly a path, `{"content":{"path":…}}` untouched, `ShouldTranslate` with/without `stream-json`. Codex: `cwd`, `cwds[]`, `projects` keys, `aggregatedOutput` untouched, `ShouldTranslate` |
 | T-F | Past failures | POC self-test vectors (both); `auth status --json` passthrough; `-d "DenwAP74"` regression (distro unquoted); `runtimeWorkspaceRoots` corrupted-path case never produced by translation; wsl.exe UTF-16 error text not emitted as protocol (WSL_UTF8 set in LaunchSpec env) |
 | T-A | Args | `--relay-version`, `--relay-self-test`, unknown `--relay-x` error, `--version` forwarded |
 | T-L* | Launch spec | exact `wsl.exe` argument string for: no env, env, spaces in cwd, mode wsl, mode windows; masking in logged command line |
@@ -621,7 +658,10 @@ emit large (10 MB) line. Tests run `RelayMain` in-process with an `IChildLaunche
 fake child instead of `wsl.exe`, using pipes for relay stdin/stdout/stderr. Every test has a 10 s
 timeout; a timeout fails the test (no hang).
 
-Cases: EOF editor→agent closes child stdin; child exit with stdin open → relay exits; exit code
+Cases: EOF editor→agent closes child stdin; child ignores stdin EOF → relay keeps relaying while the
+child runs, and terminating the relay process terminates the child (job object; checked by PID);
+child exits but a grandchild keeps stdout open → relay exits after the drain timeout; passthrough
+mode delivers a prompt without newline immediately; child exit with stdin open → relay exits; exit code
 pass-through (0, 3, -1); child crash; start failure (nonexistent exe) → exit 1 + stderr message;
 stderr bytes identical; stdout contains only protocol lines; large line intact; unterminated last
 line intact; log failure (log path is a directory) → one warning, relay continues.
@@ -693,10 +733,10 @@ README sections:
 |---|---|---|
 | DEV-1 | Q2 default modes `wsl` (automount mapping) and `windows` (native) relax R6/R15 for unmatched launch dirs only. | Accepted. |
 | DEV-2 | `--exec` (variant A) vs `--` + single-quoting (variant B) in the wsl.exe command line (§7.1). | Decided by test T-L7; R6 updated afterwards. |
-| DEV-3 | Object keys that represent paths (rule-declared key containers, e.g. Codex `projects`) are translated. | Accepted; R19 amended. |
-| OI-1 | Path detection by field list vs by value. | Resolved: whole-value detection + opaque denylist (§8.2); R18/R19/R23 amended. Opaque lists reviewed against a full capture (TODO.md). |
-| OI-2 | Zed `agent_servers` entry for Codex. | Resolved: configured in global Zed `settings.json` and working with the POC; copy into README (TODO.md). |
-| OI-3 | Mode `windows` default executable. | Resolved: each agent's standard Windows install path (§8.3, §8.4); Codex path to be verified (TODO.md). |
+| DEV-3 | Object keys that represent paths (key starts with a mapped root, e.g. Codex `projects` keys) are translated; no per-agent key declaration. | Accepted; R19 amended. |
+| OI-1 | Path detection by field list vs by value. | Decided: mapped-prefix detection + opaque denylist (§8.2); R18/R19/R23 amended. **Pending:** opaque lists reviewed against a full captured session (TODO.md). |
+| OI-2 | Zed `agent_servers` entry for Codex. | Decided: configured in global Zed `settings.json`, works with the POC. **Pending:** copy into README (TODO.md). |
+| OI-3 | Mode `windows` default executable. | Decided: each agent's standard Windows install path, override `windowsExecutable` (§5.4, §8.3, §8.4). **Pending:** verify paths on Windows (TODO.md). |
 | OI-4 | Resumed Claude history shows Linux paths (adapter reads `.jsonl` directly). Translating transcripts would require writing files — out of scope (V13). | Accepted limitation; README note in TODO.md. |
 
 ---
