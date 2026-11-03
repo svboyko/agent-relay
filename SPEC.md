@@ -1,11 +1,13 @@
 # Agent Relay — Specification
 
-Status: draft 4 (2026-11-03) — design decisions made (DEV-1, DEV-3 accepted; translation by
+Status: draft 5 (2026-11-03) — design decisions made (DEV-1, DEV-3 accepted; translation by
 mapped-prefix path detection, R18/R19/R23 amended). Pending verification on Windows: DEV-2 command-line
-form, opaque-field review, default Windows executable paths (see §16 and `TODO.md`).
+form, opaque-field review, default Windows executable paths, job-object teardown of the Linux
+agent (see §16 and `TODO.md`).
 Sources: `VISION.md` (Vn), `REQUIREMENTS.md` (Rn, Qn), and lessons from the proof-of-concept
 wrappers `../claude-wsl` and `../codex-wsl` (marked **[POC]**).
-Where this spec deviates from a requirement, the deviation is listed in §16 and marked **[DEV-n]**.
+Where this spec deviates from a requirement, the deviation is listed in §16 and marked **[DEV-n]**;
+requirements already amended to match the spec are listed there as **AM-n**.
 
 ---
 
@@ -25,8 +27,9 @@ Zed (Windows)                agent-relay-<agent>.exe (Windows)            WSL di
 The relay:
 1. selects a project configuration from its Windows launch directory;
 2. starts the agent through `wsl.exe` with an explicit Linux working directory;
-3. relays newline-delimited JSON in both directions, translating string values that are entirely
-   a path under a configured mapping, between Windows and Linux form;
+3. relays newline-delimited JSON in both directions, translating string values and keys that start
+   with a configured mapped folder (a documented heuristic, §8.2) between Windows and Linux form;
+   other content is forwarded unchanged;
 4. passes the child's exit code through.
 
 It never mounts, copies, or synchronizes files (V13, R35). Isolation is the user's WSL setup (V4).
@@ -149,8 +152,11 @@ threads + blocking I/O only, R29). Only framework assemblies; JSON via `System.W
 ### 4.3 build.sh (optional, Q1)
 
 `mcs -langversion:5 -r:System.Web.Extensions ...` producing the same three exes; for agents running
-tests in WSL with mono. Final builds are manual on Windows. Tests that need `wsl.exe` do not exist
-(the launcher seam replaces it), so the full suite runs under mono.
+tests in WSL with mono. Final builds are manual on Windows. No test needs `wsl.exe` (the launcher
+seam replaces it), but tests marked **[win]** in §13 need Windows APIs (Job Object,
+`CommandLineToArgvW`); under mono they are reported as `SKIP` and do not fail the run. Job Object
+calls in the launcher are made only when `Environment.OSVersion.Platform == Win32NT`. A mono run is
+therefore not a release check; the release check is the full suite on Windows.
 
 ---
 
@@ -321,7 +327,7 @@ WorkingDirectory: launch dir
 - No `cmd.exe`, no native fallback, no Windows `PATH` lookups inside WSL (R6, R7). Works with
   `automount.enabled=false` and `interop.enabled=false`.
 
-**[DEV-2, decided by test]** Two candidate command-line forms; the test T-L7 (§13.4) picks one:
+**[DEV-2, pending test T-L7]** Two candidate command-line forms; the test T-L7 (§13.4) picks one:
 
 | Variant | Command line | Argument safety |
 |---|---|---|
@@ -540,17 +546,28 @@ Line pump rules (translation enabled):
 ## 10. Lifecycle and exit (V11, R27)
 
 1. Start child inside a Windows **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-   (P/Invoke, kernel32). If the relay process dies or is killed by the editor, Windows closes the
-   job handle and terminates `wsl.exe` (or the Windows agent) — no orphaned children. Start the
-   three pumps. Input pump is a background thread.
+   (P/Invoke, kernel32; Windows only). If the relay process dies or is killed by the editor,
+   Windows closes the job handle and terminates `wsl.exe` (or the Windows agent) and any Windows
+   descendants. **Provisional:** whether the Linux agent process also ends when `wsl.exe` is
+   terminated is not yet verified (item 9). Start the three pumps. Input pump is a background
+   thread.
 2. Relay stdin EOF → close child stdin. The relay does **not** kill the child on EOF: agents may
    legitimately keep working after stdin EOF (e.g. a prompt piped to `claude -p` streams output for
    minutes). A child that ignores EOF keeps running until it exits or the editor terminates the
    relay; in the latter case the job object (step 1) terminates the child. The relay itself adds
    no wait that the editor cannot end.
-3. Wait for child exit, then join output and error pumps with a **drain timeout of 2 s**. A
-   descendant process that inherited the pipes can keep them open after the child exits; after the
-   timeout the relay stops waiting, logs `drain timeout`, flushes stdout and exits.
+3. Wait for child exit, then drain output and error pumps until both reach EOF **or** both are
+   **idle for 2 s**. Each pump keeps a `lastActivity` timestamp, updated whenever a read returns
+   data and whenever a write completes. A pump is idle only while it is blocked in a *read* with
+   no data; a pump that is reading data or blocked in a *write* (slow editor reading stdout) is
+   active, and the relay keeps waiting for it without limit. So output still being delivered is
+   never cut off (R27); only pipes held open without traffic — typically by a descendant process
+   that inherited them — end the wait.
+   After an idle timeout: log `drain idle timeout`, flush relay stdout/stderr, and exit. The pumps
+   are background threads, so they end with the process; any data a descendant writes after that
+   point is not forwarded (the protocol peer — the child — has already exited). Whatever was
+   already read is always written and flushed before exit, because the idle check only fires
+   between reads.
 4. Exit with the child's exit code (including negative/large codes such as wsl.exe `-1`).
 5. Child exits while relay stdin is still open (Zed keeps it open) → do not wait for the input
    pump; process exits (background thread) — no hang.
@@ -638,7 +655,7 @@ matching tests.
 
 | ID | Area | Cases |
 |---|---|---|
-| T-Q | Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; round-trip through a `CommandLineToArgvW` P/Invoke on Windows (skipped under mono) |
+| T-Q | Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; **[win]** round-trip through a `CommandLineToArgvW` P/Invoke |
 | T-C | Config | Windows path in `executable` rejected, `windowsExecutable` outside `defaults.agents` rejected, missing file, bad JSON, unknown field (`logEnabled`), wrong types, relative/`/` linux roots, invalid windows roots, duplicate roots (case), missing agent executable, `.cmd` in windows mode, default Windows executable expansion + missing-file error, `projects` empty with mode none |
 | T-M | Merge | defaults→project→agent precedence, env null removal, log field merge, mapping concat + duplicates |
 | T-S | Selection | exact root, subdir, case-insensitive, `app` vs `app-other`, nested projects longest wins, drive root `C:\`, UNC, no match → each mode |
@@ -654,13 +671,25 @@ matching tests.
 The tests exe doubles as the fake child: `agent-relay-tests.exe --fake-child <script>` where the
 script selects behavior: echo lines, echo with Linux paths, write stderr, exit with code N, crash
 (unhandled exception), ignore stdin EOF, exit while stdin open, emit unterminated last line,
-emit large (10 MB) line. Tests run `RelayMain` in-process with an `IChildLauncher` that starts the
-fake child instead of `wsl.exe`, using pipes for relay stdin/stdout/stderr. Every test has a 10 s
-timeout; a timeout fails the test (no hang).
+emit large (10 MB) line, spawn a grandchild that holds stdout open, then exit.
+
+Two harness styles:
+- **In-process** (most cases): `RelayMain.Run` takes the relay's stdin/stdout/stderr as injected
+  streams and an `IChildLauncher`; the test supplies pipes and a launcher that starts the fake child
+  instead of `wsl.exe`.
+- **Out-of-process** (cases that terminate the relay): the tests exe starts *itself* as a relay with
+  `agent-relay-tests.exe --relay-under-test <fake-child script>`, which runs `RelayMain.Run` on the
+  real console streams with the fake-child launcher. The test reads the fake child's PID from its
+  first output line, kills the relay process, and checks the child PID has exited.
+
+Every test has a 10 s timeout; a timeout fails the test (no hang). Tests marked **[win]** are
+skipped under mono.
 
 Cases: EOF editor→agent closes child stdin; child ignores stdin EOF → relay keeps relaying while the
-child runs, and terminating the relay process terminates the child (job object; checked by PID);
-child exits but a grandchild keeps stdout open → relay exits after the drain timeout; passthrough
+child runs; **[win]** terminating the relay process terminates the child (job object; checked by
+PID); child exits but a grandchild keeps stdout open without writing → relay exits after the 2 s
+idle timeout; child exits while 10 MB of output is still queued and the test reader reads slowly →
+all bytes delivered (no idle timeout while writing); passthrough
 mode delivers a prompt without newline immediately; child exit with stdin open → relay exits; exit code
 pass-through (0, 3, -1); child crash; start failure (nonexistent exe) → exit 1 + stderr message;
 stderr bytes identical; stdout contains only protocol lines; large line intact; unterminated last
@@ -727,13 +756,16 @@ README sections:
 
 ---
 
-## 16. Deviations and open items
+## 16. Deviations, requirement amendments and open items
 
 | ID | Item | Status |
 |---|---|---|
 | DEV-1 | Q2 default modes `wsl` (automount mapping) and `windows` (native) relax R6/R15 for unmatched launch dirs only. | Accepted. |
-| DEV-2 | `--exec` (variant A) vs `--` + single-quoting (variant B) in the wsl.exe command line (§7.1). | Decided by test T-L7; R6 updated afterwards. |
+| DEV-2 | `--exec` (variant A) vs `--` + single-quoting (variant B) in the wsl.exe command line (§7.1). | Pending: test T-L7 on Windows decides; R6 updated afterwards. |
 | DEV-3 | Object keys that represent paths (key starts with a mapped root, e.g. Codex `projects` keys) are translated; no per-agent key declaration. | Accepted; R19 amended. |
+| AM-1 | `windowsExecutable` (defaults only) for mode `windows`; `executable` always Linux (§5.2–5.4). | R13 amended. |
+| AM-2 | Line framing only when translating; passthrough and mode `windows` use raw byte pumps (§9). | R24 amended. |
+| AM-3 | Drain after child exit until EOF or 2 s idle (active writes never cut off); child in a Job Object, teardown of Linux agent provisional (§10). | R27, R39 amended. |
 | OI-1 | Path detection by field list vs by value. | Decided: mapped-prefix detection + opaque denylist (§8.2); R18/R19/R23 amended. **Pending:** opaque lists reviewed against a full captured session (TODO.md). |
 | OI-2 | Zed `agent_servers` entry for Codex. | Decided: configured in global Zed `settings.json`, works with the POC. **Pending:** copy into README (TODO.md). |
 | OI-3 | Mode `windows` default executable. | Decided: each agent's standard Windows install path, override `windowsExecutable` (§5.4, §8.3, §8.4). **Pending:** verify paths on Windows (TODO.md). |
