@@ -1,6 +1,6 @@
 # Agent Relay — Specification
 
-Status: draft 5 (2026-11-03) — design decisions made (DEV-1, DEV-3 accepted; translation by
+Status: draft 6 (2026-11-03) — design decisions made (DEV-1, DEV-3 accepted; translation by
 mapped-prefix path detection, R18/R19/R23 amended). Pending verification on Windows: DEV-2 command-line
 form, opaque-field review, default Windows executable paths, job-object teardown of the Linux
 agent (see §16 and `TODO.md`).
@@ -556,18 +556,32 @@ Line pump rules (translation enabled):
    minutes). A child that ignores EOF keeps running until it exits or the editor terminates the
    relay; in the latter case the job object (step 1) terminates the child. The relay itself adds
    no wait that the editor cannot end.
-3. Wait for child exit, then drain output and error pumps until both reach EOF **or** both are
-   **idle for 2 s**. Each pump keeps a `lastActivity` timestamp, updated whenever a read returns
-   data and whenever a write completes. A pump is idle only while it is blocked in a *read* with
-   no data; a pump that is reading data or blocked in a *write* (slow editor reading stdout) is
-   active, and the relay keeps waiting for it without limit. So output still being delivered is
-   never cut off (R27); only pipes held open without traffic — typically by a descendant process
-   that inherited them — end the wait.
-   After an idle timeout: log `drain idle timeout`, flush relay stdout/stderr, and exit. The pumps
-   are background threads, so they end with the process; any data a descendant writes after that
-   point is not forwarded (the protocol peer — the child — has already exited). Whatever was
-   already read is always written and flushed before exit, because the idle check only fires
-   between reads.
+3. Wait for child exit, then drain the output and error pumps. Each pump is in one of three
+   states:
+   - **finished** — reached EOF and forwarded everything (including any final fragment, §9);
+   - **idle** — blocked in a *read* with no data for **2 s** (`lastActivity` older than 2 s;
+     `lastActivity` is updated whenever a read returns data and whenever a write completes);
+   - **active** — anything else: reading data, or blocked in a *write* (slow editor reading
+     stdout).
+
+   The drain ends when **every pump is finished or idle**, evaluated per pump (e.g. stderr finished
+   + stdout idle ends it). While any pump is active the relay keeps waiting without limit, so
+   output still being delivered is never cut off (R27); only pipes held open without traffic —
+   typically by a descendant process that inherited them — end the wait.
+
+   On drain end with an idle pump:
+   1. Signal each idle pump to stop and take its buffer lock. A pump holds this lock while it
+      writes, and an idle pump is blocked in a read, so the lock is free; the pump writes nothing
+      after the signal.
+   2. Forward each idle line pump's buffered unterminated fragment (bytes read after the last
+      `\n`) exactly as at EOF (§9): original bytes, no translation, no `\n` added. Raw pumps have
+      no buffer.
+   3. Flush relay stdout and stderr, log `drain idle timeout` (with fragment length if any), and
+      exit.
+
+   The pumps are background threads, so they end with the process; data a descendant writes after
+   the stop signal is not forwarded (the protocol peer — the child — has already exited). Every
+   byte read from the child before the stop signal is written to relay stdout/stderr before exit.
 4. Exit with the child's exit code (including negative/large codes such as wsl.exe `-1`).
 5. Child exits while relay stdin is still open (Zed keeps it open) → do not wait for the input
    pump; process exits (background thread) — no hang.
@@ -671,7 +685,8 @@ matching tests.
 The tests exe doubles as the fake child: `agent-relay-tests.exe --fake-child <script>` where the
 script selects behavior: echo lines, echo with Linux paths, write stderr, exit with code N, crash
 (unhandled exception), ignore stdin EOF, exit while stdin open, emit unterminated last line,
-emit large (10 MB) line, spawn a grandchild that holds stdout open, then exit.
+emit large (10 MB) line, spawn a grandchild that holds stdout and/or stderr open, then exit
+(optionally after writing an unterminated fragment).
 
 Two harness styles:
 - **In-process** (most cases): `RelayMain.Run` takes the relay's stdin/stdout/stderr as injected
@@ -688,7 +703,10 @@ skipped under mono.
 Cases: EOF editor→agent closes child stdin; child ignores stdin EOF → relay keeps relaying while the
 child runs; **[win]** terminating the relay process terminates the child (job object; checked by
 PID); child exits but a grandchild keeps stdout open without writing → relay exits after the 2 s
-idle timeout; child exits while 10 MB of output is still queued and the test reader reads slowly →
+idle timeout; child writes `partial` (no newline) and exits while a grandchild holds stdout open
+→ relay stdout receives exactly `partial` before the idle-timeout exit; child exits with stderr at
+EOF and stdout held idle by a grandchild → relay exits after 2 s (per-pump condition), and the
+reverse (stdout EOF, stderr idle); child exits while 10 MB of output is still queued and the test reader reads slowly →
 all bytes delivered (no idle timeout while writing); passthrough
 mode delivers a prompt without newline immediately; child exit with stdin open → relay exits; exit code
 pass-through (0, 3, -1); child crash; start failure (nonexistent exe) → exit 1 + stderr message;

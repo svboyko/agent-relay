@@ -37,7 +37,7 @@
 - **R24:** stdin → child, child stdout → stdout. When translating: line-framed UTF-8, no BOM, `\n`, flush per line. Passthrough (no translation, mode `windows`): raw bytes, flush per read. (V10)
 - **R25:** Child stderr → stderr as raw bytes, untranslated. (V10)
 - **R26:** stdout = protocol only. Diagnostics → stderr or log. (V10)
-- **R27:** Child exit → drain stdout/stderr until EOF or 2 s without traffic (never while data is being delivered) → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. Child runs in a Windows Job Object so killing the relay kills it. (V11)
+- **R27:** Child exit → drain stdout/stderr until each stream is at EOF or 2 s without traffic (never while data is being delivered; buffered partial line forwarded on timeout) → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. Child runs in a Windows Job Object so killing the relay kills it. (V11)
 - **R28:** Child start fail → stderr msg, exit 1. (V11)
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
