@@ -412,6 +412,32 @@ denylist can only miss in the rare case where an unknown *content* field holds a
 exactly a mapped path — then that value is shown in Windows form, which is still the same file.
 The Codex POC used this approach (all strings starting with a mapped root) and worked; the Claude
 POC used an allowlist.
+
+Why whole-value and not substring replacement (decision, 2026-11-03): replacing mapped paths
+*inside* strings (`"Open file C:\\app\\x.cs"`) was considered and rejected:
+
+1. **File corruption.** Edits travel as strings (`old_string`/`new_string`, diffs, file content,
+   commands). If a file contains a mapped path, a rewritten `old_string` no longer matches (edit
+   fails) and a rewritten `new_string` writes a Linux path into a Windows file.
+2. **No reliable path end in free text.** Paths may contain spaces, dots, quotes and brackets
+   (`"Open C:\\My Files\\a.txt and b.txt"`). The suffix must be converted too (`\` ↔ `/`); a wrong
+   guess produces half-converted values like `/mnt/c/app\src\x.cs` (cf. the POC
+   `runtimeWorkspaceRoots` corruption).
+3. **Streaming chunks.** Agent text arrives in deltas; one path can be split across two chunks
+   (`"…/mnt/c/Us"` + `"ers/…"`), so translation would be inconsistent.
+4. **User intent.** A prompt like "replace `C:\\app` with `D:\\data` in config.ini" means literal
+   Windows paths; translating them makes the agent write Linux paths into the file.
+5. **Lossy round trips.** `c:/path/file` → `/mnt/c/path/file` → `C:\\path\\file`; exact string
+   comparisons (edit matching, permission rules) break.
+
+Accepted consequence: paths inside chat text appear in Linux form in agent replies, and Windows
+paths typed in prompts reach the agent unchanged (agents generally convert them themselves).
+Structured fields (`cwd`, `file_path`, tool-call locations), which Zed uses to open and follow
+files, are translated.
+
+Possible future opt-in (not in initial scope): Linux→Windows rewriting of mapped paths only in
+agent reply text shown to the user, never in the editor→agent direction and never in opaque
+fields such as edits and commands. It would still suffer from point 3.
 - Whole line must be exactly one JSON value plus whitespace; otherwise FormatException.
 
 Error handling (R21): any exception → forward the **original** line bytes, log
