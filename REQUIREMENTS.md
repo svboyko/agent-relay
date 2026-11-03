@@ -64,4 +64,9 @@
 
 ## Open Questions
 - **Q1:** Interop off → agents in WSL cannot run `csc`/tests. Manual Windows builds only, or optional WSL compile of core (mono)?
+  Answer: final building will be manual on Windows. AI agents may use mono for testing on WSL
 - **Q2:** R13 `defaults` — needed, or explicit per project only?
+  Answer: default settings should have one more field - mode. 3 options (propose JSON values)
+  - WSL default - use default WSL path mapping (/mnt/c/...). In this case all other fields are the same as for per project path
+  - Windows - call agent on windows. In this case only agents array is matter - it set the windows paths to agents. If ommitted, default agent paths should be used
+  - No run - relay should not run agent.
