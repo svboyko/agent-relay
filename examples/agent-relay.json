@@ -1,0 +1,18 @@
+{
+  "defaults": {
+    "mode": "none",
+    "distribution": "Ubuntu",
+    "log": { "level": "off", "dir": "logs", "keep": 20, "maxSizeMB": 10 },
+    "agents": {
+      "claude": { "executable": "/home/me/.local/bin/claude" },
+      "codex": { "executable": "/home/me/.local/bin/codex" }
+    }
+  },
+  "projects": [
+    {
+      "windowsRoot": "C:\\Users\\me\\src\\app",
+      "linuxRoot": "/home/me/src/app",
+      "pathMappings": [ { "windows": "D:\\Shared", "linux": "/shared" } ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "defaults": {
+    "distribution": "DenwAP74",
+    "agents": { "claude": { "executable": "/mnt/c/Users/bsw/X/DevLab/funspintest/agent-relay/tests/manual/argv-dump.sh" } }
+  },
+  "projects": [
+    {
+      "windowsRoot": "C:\\Users\\bsw\\X\\DevLab\\funspintest",
+      "linuxRoot": "/mnt/c/Users/bsw/X/DevLab/funspintest",
+      "env": { "A": "1", "B": "x y" }
+    },
+    {
+      "windowsRoot": "C:\\Users\\bsw\\X\\DevLab\\funspintest\\agent-relay\\bin\\t-l7\\no env",
+      "linuxRoot": "/mnt/c/Users/bsw/X/DevLab/funspintest/agent-relay/bin/t-l7/no env"
+    }
+  ]
+}
