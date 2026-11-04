@@ -19,7 +19,7 @@
 
 ## Config
 - **R12:** `agent-relay.json` beside exe. Only source. Read once at start. (V6)
-- **R13:** Shape: `projects[]` { `windowsRoot`, `linuxRoot`, `distribution`, `pathMappings[]`, `env{}`, `agents{ <name>: { executable, env{}, log{} } }` }. Optional top-level `defaults` (same fields, plus `mode`, `automountRoot`, and `agents.<name>.windowsExecutable` for mode `windows`). Merge: defaults → project; agent fields taken whole (project over defaults); env keys defaults → project → agent. `log` only per agent. `executable` is always a Linux path. (V6)
+- **R13:** Shape: `projects[]` { `windowsRoot`, `linuxRoot`, `distribution`, `pathMappings[]`, `env{}`, `log{}`, `agents{ <name>: { executable, env{}, log{} } }` }. Optional top-level `defaults` (same fields, plus `mode`, `automountRoot`, and `agents.<name>.windowsExecutable` for mode `windows`). Merge: defaults → project; agent fields taken whole (project over defaults); `env` keys and `log` fields merge defaults → project → agent. `executable` is always a Linux path. (V6)
 - **R14:** Validate at start: JSON ok, required fields, Win path = drive/UNC absolute, Linux path absolute ≠ `/`, no duplicate roots, agent section exists. (V7)
 - **R15:** Project select: launch dir, case-insensitive, dir boundary, longest root wins. No match → `defaults.mode` (`none` = error, default; `wsl` = automount mapping; `windows` = native). (V7, V13, Q2)
 - **R16:** Any config/select error → stderr `agent-relay-<agent>: <msg>`, exit 1, no child started. (V7)
@@ -42,7 +42,7 @@
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
 ## Logging
-- **R30:** Off by default. Configured per agent only; no project or shared log. One file per session in `log.dir` (relative → beside exe, default `logs`). (V12)
+- **R30:** Off by default. `log` settings in defaults, project, agent (later wins per field). No shared log: one file per agent per session `agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log` in `log.dir` (relative → beside exe, default `logs`). (V12)
 - **R31:** Entry = ISO timestamp, session id, direction, received + forwarded line. (V12)
 - **R32:** Launch entry: cwd, project, args, `wsl.exe` cmdline, env. Mask names containing KEY/TOKEN/SECRET/PASSWORD/AUTH/CREDENTIAL. (V4, V12)
 - **R33:** At start delete older session files beyond `log.keep` (default 20), best effort (files in use skipped). Per-file cap `log.maxSizeMB` (default 10) → stop logging that session. (V12)

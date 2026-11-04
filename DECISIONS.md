@@ -65,8 +65,9 @@ pumps, so prompts without a trailing newline appear at once.
 `ShouldTranslate`.
 
 ## D8. Logs: per agent, one file per session
-Logging is configured only per agent; there is no project-wide or shared log. Each relay process
-writes its own file and old files are pruned by count. No cross-process mutex, no rotation races.
+Log *settings* (`dir`, `enabled`, …) can be set in defaults, project and agent; there is no
+project-wide or shared log *file*. Each relay process writes its own file
+(`agent-relay-<agent>-<time>-<session8>.log`) and old files are pruned by count. No cross-process mutex, no rotation races.
 - Pruning is best effort: files of running sessions can't be deleted, so with many concurrent
   sessions more than `keep` files exist.
 - A per-file size cap (`maxSizeMB`) stops logging for that session, so one long session can't grow
@@ -88,11 +89,11 @@ POC-era fields (`logEnabled`, `claudePath`, …) with a clear message.
 Zed's Claude adapter reads `<session>.jsonl` from `CLAUDE_CONFIG_DIR` directly, not through the
 relay, so old tool calls show Linux paths. Fixing it would mean rewriting files (out of scope, V13).
 
-## D12. Agent `env` and `log` replace, not merge
+## D12. Agent fields replace, not merge
 Inside an agent section, `executable`, `env` and `log` are taken whole: project agent value, else
-default agent value. Only the top-level `env` chain merges by key (defaults → project → agent).
-Reason: one simple rule, no `null` deletion, no per-field log merge.
+default agent value. The result then joins the chain defaults → project → agent, merged by `env` key
+and by `log` field. Reason: one simple rule, no `null` deletion.
 Consequences (documented in README):
 - project `"agents": {"claude": {"env": {}}}` drops all `defaults.agents.claude.env` keys;
-- project agent `"log": {"enabled": true}` uses built-in `dir`/`keep`/`maxSizeMB`, not the defaults' values;
+- a project agent `log` hides `defaults.agents.<name>.log` (but `defaults.log` and `project.log` still apply);
 - an inherited env key can be overridden but not removed.

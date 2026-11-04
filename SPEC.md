@@ -124,12 +124,13 @@ array's member name.
     "automountRoot": "/mnt",             // mode "wsl" only; default "/mnt"
     "pathMappings": [ { "windows": "D:\\Shared", "linux": "/shared" } ],
     "env": { "NAME": "value" },
+    "log": { "enabled": false, "dir": "logs", "keep": 20, "maxSizeMB": 10 },
     "agents": {
       "claude": {
         "executable": "/home/me/.local/bin/claude",
         "windowsExecutable": "C:\\Users\\me\\.local\\bin\\claude.exe",   // defaults only
         "env": {},
-        "log": { "enabled": false, "dir": "logs", "keep": 20, "maxSizeMB": 10 }
+        "log": { "enabled": true }
       }
     }
   },
@@ -140,6 +141,7 @@ array's member name.
       "distribution": "Ubuntu",                   // required unless in defaults
       "pathMappings": [],
       "env": {},
+      "log": { "dir": "D:\\logs\\app" },
       "agents": { "claude": { "executable": "/home/me/.local/bin/claude", "env": {}, "log": {} } }
     }
   ]
@@ -155,12 +157,13 @@ array's member name.
 | `env` | Object string→string; names `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `agents.<name>.executable` | Absolute Linux path. |
 | `agents.<name>.windowsExecutable` | Absolute Windows path to an `.exe`, `%VAR%` expanded. |
-| `agents.<name>.log.enabled` | bool, default `false`. |
-| `agents.<name>.log.dir` | Windows dir, absolute or relative to exe dir. Default `logs`. |
-| `agents.<name>.log.keep` | int > 0, session files kept per agent (best effort, §10.1). Default 20. |
-| `agents.<name>.log.maxSizeMB` | number > 0, cap per session file. Default 10. |
+| `log.enabled` | bool, default `false`. |
+| `log.dir` | Windows dir, absolute or relative to exe dir. Default `logs`. |
+| `log.keep` | int > 0, session files kept per agent (best effort, §10.1). Default 20. |
+| `log.maxSizeMB` | number > 0, cap per session file. Default 10. |
 
-`log` exists only inside an agent section (D8).
+`log` is allowed in `defaults`, `projects[]` and any agent section. It holds settings only; files are
+always per agent and per session (§10.1, D8).
 
 ### 4.3 Merge
 
@@ -168,9 +171,11 @@ For agent `<name>`:
 - `distribution`: project, else defaults.
 - `pathMappings`: defaults + project, concatenated. Duplicate Windows or Linux roots → error.
 - Agent fields `executable`, `env`, `log`: each taken **whole** from `project.agents.<name>`, else
-  from `defaults.agents.<name>` (no per-key or per-field merge inside them, D12).
+  from `defaults.agents.<name>` (D12).
 - Effective `env`: `defaults.env`, then `project.env`, then agent `env`; later key wins.
   No way to remove an inherited key (`null` not allowed).
+- Effective `log`: `defaults.log`, then `project.log`, then agent `log`; later field wins, missing
+  fields → built-in defaults.
 
 ### 4.4 Default mode (Q2, D4)
 
@@ -180,7 +185,7 @@ Used only when **no project matches** the launch dir.
 |---|---|
 | `none` (default) | stderr `agent-relay-<agent>: no project in <config> matches <launchDir> (defaults.mode is "none")`, exit 1. |
 | `wsl` | WSL launch with a synthesized project: `linuxRoot` = `<automountRoot>/<drive lowercase>/<rest with />` (`C:\Users\me\x` → `/mnt/c/Users/me/x`). Mappings = `X:\` ↔ `<automountRoot>/x` for every drive letter + `defaults.pathMappings`. Everything else from `defaults`. UNC launch dir → error. Needs automount enabled (no isolation). |
-| `windows` | Native Windows launch, no WSL, no translation (raw passthrough). Uses `defaults.env` + `defaults.agents.<name>` (`windowsExecutable`, `env`, `log`). Executable = `windowsExecutable`, else `<name>.exe` searched in `PATH` directories (full path resolved by the relay). Not found → error suggesting `windowsExecutable`. |
+| `windows` | Native Windows launch, no WSL, no translation (raw passthrough). Uses `defaults.env`, `defaults.log` + `defaults.agents.<name>` (`windowsExecutable`, `env`, `log`). Executable = `windowsExecutable`, else `<name>.exe` searched in `PATH` directories (full path resolved by the relay). Not found → error suggesting `windowsExecutable`. |
 
 Mode `windows` guards: non-`.exe` target (e.g. `.cmd`) → error asking for the real `.exe`;
 target is the relay itself (same full path, or name starts with `agent-relay-`) → error.
@@ -363,7 +368,7 @@ Pending (TODO.md): verify the Linux agent ends when the job kills `wsl.exe`.
 
 ### 10.1 Files
 
-- Configured only per agent (`agents.<name>.log`). Off by default.
+- Effective `log` from §4.3. Off by default. No shared file: every relay process writes its own.
 - One file per relay process: `<dir>\agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log`
   (`session8` = first 8 hex of the session id). Dir created if missing.
 - At start, delete the oldest `agent-relay-<agent>-*.log` in `<dir>` until `keep` files remain
@@ -423,8 +428,8 @@ expected/actual on failure, summary. Exit 0 = all pass, 1 = any fail.
 | ID | Cases |
 |---|---|
 | T-Q Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; **[win]** round trip via `CommandLineToArgvW` |
-| T-C Config | missing file, bad JSON, unknown field (`logEnabled`, project-level `log`), wrong types, bad roots (relative, `/`, invalid Windows), duplicate roots (case), Windows path in `executable`, `windowsExecutable` outside defaults, missing agent executable, `.cmd` in mode `windows`, `PATH` lookup found / not found, empty `projects` with mode `none`, `examples/agent-relay.json` valid (R42) |
-| T-M Merge | distribution fallback, agent fields project-over-defaults taken whole (project agent `"env": {}` drops default agent env; `"log": {"enabled": true}` uses built-in `dir`), env order defaults → project → agent, `null` env value rejected, mapping concat + duplicates |
+| T-C Config | missing file, bad JSON, unknown field (`logEnabled`, `log.path`), wrong types, bad roots (relative, `/`, invalid Windows), duplicate roots (case), Windows path in `executable`, `windowsExecutable` outside defaults, missing agent executable, `.cmd` in mode `windows`, `PATH` lookup found / not found, empty `projects` with mode `none`, `examples/agent-relay.json` valid (R42) |
+| T-M Merge | distribution fallback, agent fields project-over-defaults taken whole (project agent `"env": {}` drops default agent env), env order defaults → project → agent, log fields defaults → project → agent (`dir` from defaults kept when project agent sets only `enabled`), `null` env value rejected, mapping concat + duplicates |
 | T-S Selection | exact root, subdir, case, `app` vs `app-other`, nested longest wins, `C:\`, UNC, no match → each mode |
 | T-P Mapping | both directions, custom mappings, longest prefix, `C:` → `C:\`, `/mnt/cat` vs `/mnt/c`, Linux case, `/` in Windows input, multi-line untouched, `café.txt` |
 | T-W Walker | byte identity, whitespace, big number, escapes kept when untouched, minimal re-encoding, invalid JSON / trailing garbage / empty line → original |
@@ -466,8 +471,8 @@ Zed, both agents: start thread, run a tool, edit a file, approve a permission, r
 README:
 1. What it is / isn't (no sync, no isolation by itself).
 2. Build (`build.cmd`, `build.cmd test`); install = copy `bin\agent-relay-*.exe` + `agent-relay.json`.
-3. Config reference (incl. whole-value agent `env`/`log`, D12) + migration from POC configs
-   (`claudePath`/`codexPath` → `agents.<name>.executable`, `logEnabled`/`logPath` → `agents.<name>.log`).
+3. Config reference (incl. whole-value agent fields, D12) + migration from POC configs
+   (`claudePath`/`codexPath` → `agents.<name>.executable`, `logEnabled`/`logPath` → `log`).
 4. Isolation setup (`wsl.conf`, `fstab` drvfs, `wsl --shutdown`).
 5. Agent install in WSL (Claude native installer; Codex install script, `bubblewrap` recommended).
 6. Zed: `agent_servers` only in global `%APPDATA%\Zed\settings.json` (project settings drop it,
