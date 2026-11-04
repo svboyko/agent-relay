@@ -124,13 +124,13 @@ array's member name.
     "automountRoot": "/mnt",             // mode "wsl" only; default "/mnt"
     "pathMappings": [ { "windows": "D:\\Shared", "linux": "/shared" } ],
     "env": { "NAME": "value" },
-    "log": { "enabled": false, "dir": "logs", "keep": 20, "maxSizeMB": 10 },
+    "log": { "level": "off", "dir": "logs", "keep": 20, "maxSizeMB": 10 },
     "agents": {
       "claude": {
         "executable": "/home/me/.local/bin/claude",
         "windowsExecutable": "C:\\Users\\me\\.local\\bin\\claude.exe",   // defaults only
         "env": {},
-        "log": { "enabled": true }
+        "log": { "level": "basic" }
       }
     }
   },
@@ -157,7 +157,7 @@ array's member name.
 | `env` | Object string→string; names `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `agents.<name>.executable` | Absolute Linux path. |
 | `agents.<name>.windowsExecutable` | Absolute Windows path to an `.exe`, `%VAR%` expanded. |
-| `log.enabled` | bool, default `false`. |
+| `log.level` | `off` \| `basic` \| `changes` \| `full` (§10.2). Default `off`. |
 | `log.dir` | Windows dir, absolute or relative to exe dir. Default `logs`. |
 | `log.keep` | int > 0, session files kept per agent (best effort, §10.1). Default 20. |
 | `log.maxSizeMB` | number > 0, cap per session file. Default 10. |
@@ -319,9 +319,9 @@ Unmatched → unchanged. Boundary rule: `/mnt/cat` ≠ `/mnt/c`, `C:\app-other` 
 - Changed strings are re-encoded escaping only `"`, `\`, U+0000–U+001F (not `JavaScriptSerializer.Serialize`).
 - Context per value: member name, parent member name, opaque flag; arrays inherit the member name.
 - Opaque members (`rules.IsOpaqueField`) are copied verbatim with all descendants (D2).
-- With logging on, each translation logs `field=<member name>`.
+- Log level `changes` or `full`: each translation is logged (§10.2).
 - Line must be exactly one JSON value + whitespace, else error.
-- Any error → forward the **original** line bytes, log `<direction> TRANSLATION ERROR: <message>` (R21).
+- Any error → forward the **original** line bytes, log `TRANSLATION ERROR` (R21).
 
 ### 8.3 Claude rules (R22)
 
@@ -368,7 +368,8 @@ Pending (TODO.md): verify the Linux agent ends when the job kills `wsl.exe`.
 
 ### 10.1 Files
 
-- Effective `log` from §4.3. Off by default. No shared file: every relay process writes its own.
+- Effective `log` from §4.3. Level `off` by default → no file. No shared file: every relay process
+  writes its own.
 - One file per relay process: `<dir>\agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log`
   (`session8` = first 8 hex of the session id). Dir created if missing.
 - At start, delete the oldest `agent-relay-<agent>-*.log` in `<dir>` until `keep` files remain
@@ -378,18 +379,26 @@ Pending (TODO.md): verify the Linux agent ends when the job kills `wsl.exe`.
   for this session (relay continues).
 - Opened once, append, `FileShare.Read`; flushed per entry; one in-process lock for the threads.
 
-### 10.2 Format (R31)
+### 10.2 Levels and entries (R31)
 
-UTF-8, no BOM:
+Levels are cumulative: each includes everything of the level above it.
+
+| Level | Entries | Content in log |
+|---|---|---|
+| `off` | none, no file | — |
+| `basic` | `LAUNCH` (§10.3), `EOF`, `EXIT` (code), `ERROR`, `TRANSLATION ERROR` (direction, message, line length — not the line), `AGENT STDERR`, `LOG LIMIT` | agent stderr only |
+| `changes` | + `<direction> CHANGE` per translated value: `field=<member>` (or `key in <member>`), old → new as JSON strings | translated values (paths, or content translated by mistake) |
+| `full` | + `<direction> RECEIVED` / `FORWARDED` per line; forwarded == received → `(unchanged)`. Raw pumps log each chunk as `RECEIVED` | full conversation |
+
+`<direction>` = `EDITOR -> AGENT` or `AGENT -> EDITOR`. Stderr and raw chunks are decoded as UTF-8
+for the log only (invalid bytes replaced); forwarded bytes are never changed.
+
+Format: UTF-8, no BOM:
 
 ```
-[2026-11-03T20:45:01.1234567+01:00 session=<32-hex> <DIRECTION>]
+[2026-11-03T20:45:01.1234567+01:00 session=<32-hex> <ENTRY>]
 <payload>
 ```
-
-Directions: `LAUNCH`, `EDITOR -> AGENT RECEIVED`, `EDITOR -> AGENT FORWARDED`,
-`AGENT -> EDITOR RECEIVED`, `AGENT -> EDITOR FORWARDED`, `AGENT STDERR`, `TRANSLATION ERROR`,
-`ERROR`, `EOF`, `EXIT`, `LOG LIMIT`. Forwarded == received → payload `(unchanged)`.
 
 ### 10.3 Launch entry (R32)
 
@@ -428,8 +437,8 @@ expected/actual on failure, summary. Exit 0 = all pass, 1 = any fail.
 | ID | Cases |
 |---|---|
 | T-Q Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; **[win]** round trip via `CommandLineToArgvW` |
-| T-C Config | missing file, bad JSON, unknown field (`logEnabled`, `log.path`), wrong types, bad roots (relative, `/`, invalid Windows), duplicate roots (case), Windows path in `executable`, `windowsExecutable` outside defaults, missing agent executable, `.cmd` in mode `windows`, `PATH` lookup found / not found, empty `projects` with mode `none`, `examples/agent-relay.json` valid (R42) |
-| T-M Merge | distribution fallback, agent fields project-over-defaults taken whole (project agent `"env": {}` drops default agent env), env order defaults → project → agent, log fields defaults → project → agent (`dir` from defaults kept when project agent sets only `enabled`), `null` env value rejected, mapping concat + duplicates |
+| T-C Config | missing file, bad JSON, unknown field (`logEnabled`, `log.path`, `log.enabled`), invalid `log.level`, wrong types, bad roots (relative, `/`, invalid Windows), duplicate roots (case), Windows path in `executable`, `windowsExecutable` outside defaults, missing agent executable, `.cmd` in mode `windows`, `PATH` lookup found / not found, empty `projects` with mode `none`, `examples/agent-relay.json` valid (R42) |
+| T-M Merge | distribution fallback, agent fields project-over-defaults taken whole (project agent `"env": {}` drops default agent env), env order defaults → project → agent, log fields defaults → project → agent (`dir` from defaults kept when project agent sets only `level`), `null` env value rejected, mapping concat + duplicates |
 | T-S Selection | exact root, subdir, case, `app` vs `app-other`, nested longest wins, `C:\`, UNC, no match → each mode |
 | T-P Mapping | both directions, custom mappings, longest prefix, `C:` → `C:\`, `/mnt/cat` vs `/mnt/c`, Linux case, `/` in Windows input, multi-line untouched, `café.txt` |
 | T-W Walker | byte identity, whitespace, big number, escapes kept when untouched, minimal re-encoding, invalid JSON / trailing garbage / empty line → original |
@@ -453,7 +462,8 @@ Cases: stdin EOF closes child stdin; child ignoring EOF keeps relaying; exit wit
 relay exits; exit codes 0, 3, -1; crash; start failure → exit 1 + message; stderr bytes identical;
 stdout only protocol; 10 MB line intact; unterminated last line intact; passthrough delivers a
 prompt without newline at once; **[win]** grandchild spawned at child start and holding stdout → relay
-exits after child exit and grandchild is gone; **[win]** killing the relay kills the child (PID check); logging: new file
+exits after child exit and grandchild is gone; **[win]** killing the relay kills the child (PID check); logging: each level writes exactly its entries (`basic` has no message
+content, `changes` adds only `CHANGE` entries, `full` adds lines); `off` creates no file; new file
 per session, pruning keeps `keep` files when none are in use, a file in use is skipped,
 `maxSizeMB` reached → `LOG LIMIT` entry then no more writes, log dir is a file → one warning,
 relay continues.
@@ -490,5 +500,5 @@ README:
    ```
    Codex entry: copied after verification (TODO.md). Known limitation: resumed Claude history
    shows Linux paths (D11). Mode `windows` inherits `CLAUDE_CONFIG_DIR` from Zed — explain.
-7. Logging + privacy warning (R36).
+7. Logging levels + privacy warning (`full`, and `basic`/`changes` partly) (R36).
 8. Troubleshooting: `--relay-self-test`, `WSL_E_DISTRO_NOT_FOUND`, project not matched, logs.

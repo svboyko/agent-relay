@@ -13,8 +13,8 @@
 
 ## Verification
 
-- [ ] **Codex opaque fields.** With logging on, run a Codex session in Zed that reads and edits files, runs a
-      command and asks for approval. Check the log's `field=` entries: every translated field must really
+- [ ] **Codex opaque fields.** With log level `changes`, run a Codex session in Zed that reads and edits files, runs a
+      command and asks for approval. Check the log's `CHANGE` entries: every translated field must really
       be a path; add any content field that was translated to the opaque list in `CodexRules.cs`. Do the same
       for Claude. (SPEC §8.2–8.4, DECISIONS D2)
 - [ ] **Job object teardown:** when the relay's job object kills `wsl.exe`, check that the Linux agent process

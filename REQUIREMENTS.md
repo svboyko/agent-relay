@@ -42,15 +42,15 @@
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
 ## Logging
-- **R30:** Off by default. `log` settings in defaults, project, agent (later wins per field). No shared log: one file per agent per session `agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log` in `log.dir` (relative → beside exe, default `logs`). (V12)
-- **R31:** Entry = ISO timestamp, session id, direction, received + forwarded line. (V12)
+- **R30:** `log.level`: `off` (default) | `basic` (launch, errors, exit, agent stderr; no messages) | `changes` (+ each translated value, old → new) | `full` (+ every received/forwarded line). `log` settings in defaults, project, agent (later wins per field). No shared log: one file per agent per session `agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log` in `log.dir` (relative → beside exe, default `logs`). (V12)
+- **R31:** Entry = ISO timestamp, session id, entry type, payload per level (R30). (V12)
 - **R32:** Launch entry: cwd, project, args, `wsl.exe` cmdline, env. Mask names containing KEY/TOKEN/SECRET/PASSWORD/AUTH/CREDENTIAL. (V4, V12)
 - **R33:** At start delete older session files beyond `log.keep` (default 20), best effort (files in use skipped). Per-file cap `log.maxSizeMB` (default 10) → stop logging that session. (V12)
 - **R34:** Log write fail → one stderr warning, relay continues. (V12)
 
 ## Security
 - **R35:** Relay never mounts, copies, syncs files or widens access. (V4, V13)
-- **R36:** Docs warn: logs = full conversation content. (V4, V12)
+- **R36:** Docs warn: level `full` logs full conversation content; `basic`/`changes` may contain agent stderr and translated values. (V4, V12)
 
 ## Tests
 - **R37:** `agent-relay-tests.exe`: no deps; exit 0 = pass, 1 = fail; failures listed. (V17)

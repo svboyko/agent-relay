@@ -25,7 +25,8 @@ Possible later opt-in: Linux→Windows rewriting in agent reply text only (still
 - A denylist misses new *content* fields → a content string starting with a mapped path gets
   rewritten (a known gap in V9).
 - Chosen: denylist, because new path fields then work automatically. Mitigation: opaque lists built
-  from captured traffic, `field=` log diagnostics, review of a full session before release.
+  from captured traffic, log level `changes` (every translated value), review of a full session
+  before release.
 - **[POC]** Codex POC translated every string starting with a mapped root and worked; Claude POC used
   an allowlist.
 
@@ -65,7 +66,7 @@ pumps, so prompts without a trailing newline appear at once.
 `ShouldTranslate`.
 
 ## D8. Logs: per agent, one file per session
-Log *settings* (`dir`, `enabled`, …) can be set in defaults, project and agent; there is no
+Log *settings* (`level`, `dir`, …) can be set in defaults, project and agent; there is no
 project-wide or shared log *file*. Each relay process writes its own file
 (`agent-relay-<agent>-<time>-<session8>.log`) and old files are pruned by count. No cross-process mutex, no rotation races.
 - Pruning is best effort: files of running sessions can't be deleted, so with many concurrent
@@ -73,6 +74,17 @@ project-wide or shared log *file*. Each relay process writes its own file
 - A per-file size cap (`maxSizeMB`) stops logging for that session, so one long session can't grow
   without limit. The log tail is lost then; raise the cap for full captures.
 **[POC]** Shared log reached 13 MB; logging was on in the sample config → off by default.
+
+## D13. Log levels: off, basic, changes, full
+- `basic` has (almost) no conversation content and stays small, so it can be left on for
+  troubleshooting (wrong project, `WSL_E_DISTRO_NOT_FOUND`, crashes, exit codes).
+- `changes` logs only what the relay rewrote. It is the tool for the opaque-field review (D2): far
+  smaller than `full` and nothing to search through.
+- `full` = POC behavior, for protocol debugging and traffic capture.
+- Levels are cumulative: one setting, no per-entry switches.
+- Rejected: `errors` (≈ `basic`, launch details are needed exactly when something fails) and
+  `messages` (method/id/size per message without content: useful, but needs field extraction;
+  can be added later).
 
 ## D9. Config only beside the exe, strict schema
 **[POC]** Config must not come from the project dir. Unknown fields are errors, which catches
