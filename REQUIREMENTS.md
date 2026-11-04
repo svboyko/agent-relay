@@ -37,20 +37,20 @@
 - **R24:** stdin → child, child stdout → stdout. When translating: line-framed UTF-8, no BOM, `\n`, flush per line. Passthrough (no translation, mode `windows`): raw bytes, flush per read. (V10)
 - **R25:** Child stderr → stderr as raw bytes, untranslated. (V10)
 - **R26:** stdout = protocol only. Diagnostics → stderr or log. (V10)
-- **R27:** Relay joins a Windows Job Object before starting the child, so the child and its descendants are members from creation (killing the relay kills them; job setup failure → exit 1, no child). Child exit → kill remaining job processes (descendants holding pipes) → drain stdout/stderr to EOF → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. (V11)
+- **R27:** Relay joins a Windows Job Object before starting the child, so the child and its descendants are members from creation (killing the relay kills them; job setup failure → exit 1, no child). Child exit → kill remaining job processes (descendants holding pipes; on cleanup failure: stderr warning, wait ≤ 5 s for pipes, exit) → drain stdout/stderr to EOF → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. (V11)
 - **R28:** Child start fail → stderr msg, exit 1. (V11)
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
 ## Logging
-- **R30:** `log.level`: `off` (default) | `basic` (launch, errors, exit, agent stderr; no messages) | `changes` (+ each translated value, old → new) | `full` (+ every received/forwarded line). `log` settings in defaults, project, agent (later wins per field). No shared log: one file per agent per session `agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log` in `log.dir` (relative → beside exe, default `logs`). (V12)
+- **R30:** `log.level`: `off` (default) | `basic` (launch, errors, exit, agent stderr; no protocol message bodies, but launch args/env and stderr may hold content) | `changes` (+ each translated value, old → new) | `full` (+ every received/forwarded line). `log` settings in defaults, project, agent (later wins per field). No shared log: one file per agent per session `agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log` in `log.dir` (relative → beside exe, default `logs`). (V12)
 - **R31:** Entry = ISO timestamp, session id, entry type, payload per level (R30). (V12)
 - **R32:** Launch entry: cwd, project, args, `wsl.exe` cmdline, env. Mask names containing KEY/TOKEN/SECRET/PASSWORD/AUTH/CREDENTIAL. (V4, V12)
-- **R33:** At start delete older session files beyond `log.keep` (default 20), best effort (files in use skipped). Per-file cap `log.maxSizeMB` (default 10) → stop logging that session. (V12)
+- **R33:** At start delete older session files beyond `log.keep` (default 20), best effort (files in use skipped). Per-file cap `log.maxSizeMB` (default 10), checked before each write: entry that would exceed it → skipped, `LOG LIMIT`, stop logging that session. (V12)
 - **R34:** Log write fail → one stderr warning, relay continues. (V12)
 
 ## Security
 - **R35:** Relay never mounts, copies, syncs files or widens access. (V4, V13)
-- **R36:** Docs warn: level `full` logs full conversation content; `basic`/`changes` may contain agent stderr and translated values. (V4, V12)
+- **R36:** Docs warn: level `full` logs full conversation content; `basic`/`changes` may contain launch args (e.g. `-p` prompts), agent stderr and translated values. (V4, V12)
 
 ## Tests
 - **R37:** `agent-relay-tests.exe`: no deps; exit 0 = pass, 1 = fail; failures listed. (V17)

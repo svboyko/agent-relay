@@ -352,10 +352,15 @@ Unmatched → unchanged. Boundary rule: `/mnt/cat` ≠ `/mnt/c`, `C:\app-other` 
    If the relay dies, its job handle closes and Windows kills every job member.
 2. Start the child and the three pumps (background threads).
 3. Relay stdin EOF → close child stdin. No kill (D6).
-4. Child exits → terminate every job process except the relay (`JobObjectBasicProcessIdList`,
-   repeat until only the relay is left) → join output and error pumps until EOF → flush
-   stdout/stderr → exit with the child's exit code (incl. `-1`). Do not wait for the input pump
-   (stdin may stay open).
+4. Child exits → cleanup: terminate every job process except the relay
+   (`JobObjectBasicProcessIdList`); repeat at most 5 rounds until only the relay is left → join
+   output and error pumps until EOF → flush stdout/stderr → exit with the child's exit code
+   (incl. `-1`). Do not wait for the input pump (stdin may stay open).
+   **Cleanup failure** (an API call fails, or processes remain after 5 rounds): stderr
+   `agent-relay-<agent>: cleanup failed: <message>`, log `ERROR`, join the pumps for at most 5 s,
+   flush, exit with the child's exit code. Data a remaining descendant still sends is lost. On exit
+   the job handle closes and Windows kills the remaining members (step 1).
+   Cleanup is behind the `IChildProcess` seam, so tests can make it fail.
 5. Write to child stdin after its exit (broken pipe) → input pump stops, logs once.
 6. Relay stdout closed by parent → output pump keeps reading child stdout and discards, logs once.
 7. Ctrl+C / console close: not intercepted.
@@ -375,8 +380,10 @@ Pending (TODO.md): verify the Linux agent ends when the job kills `wsl.exe`.
 - At start, delete the oldest `agent-relay-<agent>-*.log` in `<dir>` until `keep` files remain
   including the new one. **Best effort:** files in use (running sessions) and deletion errors are
   skipped, so more than `keep` files can exist with many concurrent sessions or concurrent starts.
-- Size cap per file: when the file reaches `maxSizeMB`, write one `LOG LIMIT` entry and stop logging
-  for this session (relay continues).
+- Size cap per file, checked **before** each write: if current size + entry size would exceed
+  `maxSizeMB`, the entry is skipped, one short `LOG LIMIT` entry is written instead, and logging stops
+  for this session (relay continues). The file never exceeds the cap by more than that entry; a
+  single entry larger than the cap is never written.
 - Opened once, append, `FileShare.Read`; flushed per entry; one in-process lock for the threads.
 
 ### 10.2 Levels and entries (R31)
@@ -386,7 +393,7 @@ Levels are cumulative: each includes everything of the level above it.
 | Level | Entries | Content in log |
 |---|---|---|
 | `off` | none, no file | — |
-| `basic` | `LAUNCH` (§10.3), `EOF`, `EXIT` (code), `ERROR`, `TRANSLATION ERROR` (direction, message, line length — not the line), `AGENT STDERR`, `LOG LIMIT` | agent stderr only |
+| `basic` | `LAUNCH` (§10.3), `EOF`, `EXIT` (code), `ERROR`, `TRANSLATION ERROR` (direction, message, line length — not the line), `AGENT STDERR`, `LOG LIMIT` | no protocol message bodies; launch args/env (§10.3) and agent stderr may contain content (e.g. `claude -p "<prompt>"`) |
 | `changes` | + `<direction> CHANGE` per translated value: `field=<member>` (or `key in <member>`), old → new as JSON strings | translated values (paths, or content translated by mistake) |
 | `full` | + `<direction> RECEIVED` / `FORWARDED` per line; forwarded == received → `(unchanged)`. Raw pumps log each chunk as `RECEIVED` | full conversation |
 
@@ -462,10 +469,14 @@ Cases: stdin EOF closes child stdin; child ignoring EOF keeps relaying; exit wit
 relay exits; exit codes 0, 3, -1; crash; start failure → exit 1 + message; stderr bytes identical;
 stdout only protocol; 10 MB line intact; unterminated last line intact; passthrough delivers a
 prompt without newline at once; **[win]** grandchild spawned at child start and holding stdout → relay
-exits after child exit and grandchild is gone; **[win]** killing the relay kills the child (PID check); logging: each level writes exactly its entries (`basic` has no message
-content, `changes` adds only `CHANGE` entries, `full` adds lines); `off` creates no file; new file
+exits after child exit and grandchild is gone; **[win]** killing the relay kills the child (PID check); cleanup failure
+(fake `IChildProcess` cleanup throws, grandchild holds stdout) → `cleanup failed` on stderr, relay
+exits within 5 s + margin with the child's exit code; logging: each level writes exactly its
+entries (`basic` has no `RECEIVED`/`FORWARDED`/`CHANGE` entries, `changes` adds only `CHANGE`
+entries, `full` adds lines); `off` creates no file; new file
 per session, pruning keeps `keep` files when none are in use, a file in use is skipped,
-`maxSizeMB` reached → `LOG LIMIT` entry then no more writes, log dir is a file → one warning,
+entry that would pass `maxSizeMB` → skipped, `LOG LIMIT` written, no more writes, file size ≤ cap
++ `LOG LIMIT` entry, log dir is a file → one warning,
 relay continues.
 
 ### 12.4 Manual (README checklist)

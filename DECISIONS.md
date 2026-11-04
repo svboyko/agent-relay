@@ -51,6 +51,9 @@ When the child exits, the relay kills all other job processes, so descendants th
 stdout/stderr die and the pipes close. Pumps then reach EOF and are joined normally — no idle
 timeout, no partial-line special cases.
 Job setup failure → exit 1 before any child exists; running without a job could hang on join.
+Cleanup failure → bounded: at most 5 kill rounds, then at most 5 s waiting for pipes, then exit.
+Exiting closes the job handle, so Windows kills what is left. This is the only timeout and only on
+failure; normal exit has none.
 Trade-off: background processes started by the agent end with it.
 Under WSL the pipes are held by `wsl.exe`, so stuck pipes mostly affect mode `windows`.
 
@@ -72,12 +75,14 @@ project-wide or shared log *file*. Each relay process writes its own file
 - Pruning is best effort: files of running sessions can't be deleted, so with many concurrent
   sessions more than `keep` files exist.
 - A per-file size cap (`maxSizeMB`) stops logging for that session, so one long session can't grow
-  without limit. The log tail is lost then; raise the cap for full captures.
+  without limit. Checked before writing, because protocol lines are unbounded. The log tail is lost
+  then; raise the cap for full captures.
 **[POC]** Shared log reached 13 MB; logging was on in the sample config → off by default.
 
 ## D13. Log levels: off, basic, changes, full
-- `basic` has (almost) no conversation content and stays small, so it can be left on for
-  troubleshooting (wrong project, `WSL_E_DISTRO_NOT_FOUND`, crashes, exit codes).
+- `basic` has no protocol message bodies and stays small, so it can be left on for troubleshooting.
+  Not content-free: launch args (`claude -p "<prompt>"`) and agent stderr are logged.
+  Covers wrong project, `WSL_E_DISTRO_NOT_FOUND`, crashes, exit codes.
 - `changes` logs only what the relay rewrote. It is the tool for the opaque-field review (D2): far
   smaller than `full` and nothing to search through.
 - `full` = POC behavior, for protocol debugging and traffic capture.
