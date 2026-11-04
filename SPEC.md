@@ -129,7 +129,7 @@ array's member name.
         "executable": "/home/me/.local/bin/claude",
         "windowsExecutable": "C:\\Users\\me\\.local\\bin\\claude.exe",   // defaults only
         "env": {},
-        "log": { "enabled": false, "dir": "logs", "keep": 20 }
+        "log": { "enabled": false, "dir": "logs", "keep": 20, "maxSizeMB": 10 }
       }
     }
   },
@@ -157,7 +157,8 @@ array's member name.
 | `agents.<name>.windowsExecutable` | Absolute Windows path to an `.exe`, `%VAR%` expanded. |
 | `agents.<name>.log.enabled` | bool, default `false`. |
 | `agents.<name>.log.dir` | Windows dir, absolute or relative to exe dir. Default `logs`. |
-| `agents.<name>.log.keep` | int > 0, session files kept per agent. Default 20. |
+| `agents.<name>.log.keep` | int > 0, session files kept per agent (best effort, §10.1). Default 20. |
+| `agents.<name>.log.maxSizeMB` | number > 0, cap per session file. Default 10. |
 
 `log` exists only inside an agent section (D8).
 
@@ -166,9 +167,10 @@ array's member name.
 For agent `<name>`:
 - `distribution`: project, else defaults.
 - `pathMappings`: defaults + project, concatenated. Duplicate Windows or Linux roots → error.
-- Agent fields `executable`, `env`, `log`: each taken whole from `project.agents.<name>`, else from
-  `defaults.agents.<name>`.
+- Agent fields `executable`, `env`, `log`: each taken **whole** from `project.agents.<name>`, else
+  from `defaults.agents.<name>` (no per-key or per-field merge inside them, D12).
 - Effective `env`: `defaults.env`, then `project.env`, then agent `env`; later key wins.
+  No way to remove an inherited key (`null` not allowed).
 
 ### 4.4 Default mode (Q2, D4)
 
@@ -337,13 +339,18 @@ Unmatched → unchanged. Boundary rule: `/mnt/cat` ≠ `/mnt/c`, `C:\app-other` 
 
 ## 9. Lifecycle and exit (V11, R27, D5, D6)
 
-1. Create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, start the child, assign it to the
-   job (Windows only). If the relay dies, Windows kills the child and its Windows descendants.
-2. Start the three pumps (background threads).
+1. Before starting the child (Windows, real launcher only): create a Job Object with
+   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assign the **relay process itself** to it. The child and
+   all its descendants are then job members from creation; there is no window to escape (D5).
+   Job creation or assignment fails → stderr `agent-relay-<agent>: cannot create job object:
+   <message>`, exit 1, no child started.
+   If the relay dies, its job handle closes and Windows kills every job member.
+2. Start the child and the three pumps (background threads).
 3. Relay stdin EOF → close child stdin. No kill (D6).
-4. Child exits → terminate the job (kills descendants still holding stdout/stderr) → join output
-   and error pumps until EOF → flush stdout/stderr → exit with the child's exit code (incl. `-1`).
-   Do not wait for the input pump (stdin may stay open).
+4. Child exits → terminate every job process except the relay (`JobObjectBasicProcessIdList`,
+   repeat until only the relay is left) → join output and error pumps until EOF → flush
+   stdout/stderr → exit with the child's exit code (incl. `-1`). Do not wait for the input pump
+   (stdin may stay open).
 5. Write to child stdin after its exit (broken pipe) → input pump stops, logs once.
 6. Relay stdout closed by parent → output pump keeps reading child stdout and discards, logs once.
 7. Ctrl+C / console close: not intercepted.
@@ -359,8 +366,11 @@ Pending (TODO.md): verify the Linux agent ends when the job kills `wsl.exe`.
 - Configured only per agent (`agents.<name>.log`). Off by default.
 - One file per relay process: `<dir>\agent-relay-<agent>-<yyyyMMdd-HHmmss>-<session8>.log`
   (`session8` = first 8 hex of the session id). Dir created if missing.
-- At start, delete the oldest `agent-relay-<agent>-*.log` in `<dir>` so that at most `keep` files
-  remain including the new one. Files that cannot be deleted (in use) are skipped.
+- At start, delete the oldest `agent-relay-<agent>-*.log` in `<dir>` until `keep` files remain
+  including the new one. **Best effort:** files in use (running sessions) and deletion errors are
+  skipped, so more than `keep` files can exist with many concurrent sessions or concurrent starts.
+- Size cap per file: when the file reaches `maxSizeMB`, write one `LOG LIMIT` entry and stop logging
+  for this session (relay continues).
 - Opened once, append, `FileShare.Read`; flushed per entry; one in-process lock for the threads.
 
 ### 10.2 Format (R31)
@@ -374,7 +384,7 @@ UTF-8, no BOM:
 
 Directions: `LAUNCH`, `EDITOR -> AGENT RECEIVED`, `EDITOR -> AGENT FORWARDED`,
 `AGENT -> EDITOR RECEIVED`, `AGENT -> EDITOR FORWARDED`, `AGENT STDERR`, `TRANSLATION ERROR`,
-`ERROR`, `EOF`, `EXIT`. Forwarded == received → payload `(unchanged)`.
+`ERROR`, `EOF`, `EXIT`, `LOG LIMIT`. Forwarded == received → payload `(unchanged)`.
 
 ### 10.3 Launch entry (R32)
 
@@ -414,7 +424,7 @@ expected/actual on failure, summary. Exit 0 = all pass, 1 = any fail.
 |---|---|
 | T-Q Quoting | simple, empty, spaces, `"`, trailing `\`, `\"` combos, Unicode, distro unquoted; **[win]** round trip via `CommandLineToArgvW` |
 | T-C Config | missing file, bad JSON, unknown field (`logEnabled`, project-level `log`), wrong types, bad roots (relative, `/`, invalid Windows), duplicate roots (case), Windows path in `executable`, `windowsExecutable` outside defaults, missing agent executable, `.cmd` in mode `windows`, `PATH` lookup found / not found, empty `projects` with mode `none`, `examples/agent-relay.json` valid (R42) |
-| T-M Merge | distribution fallback, agent fields project-over-defaults, env order defaults → project → agent, mapping concat + duplicates |
+| T-M Merge | distribution fallback, agent fields project-over-defaults taken whole (project agent `"env": {}` drops default agent env; `"log": {"enabled": true}` uses built-in `dir`), env order defaults → project → agent, `null` env value rejected, mapping concat + duplicates |
 | T-S Selection | exact root, subdir, case, `app` vs `app-other`, nested longest wins, `C:\`, UNC, no match → each mode |
 | T-P Mapping | both directions, custom mappings, longest prefix, `C:` → `C:\`, `/mnt/cat` vs `/mnt/c`, Linux case, `/` in Windows input, multi-line untouched, `café.txt` |
 | T-W Walker | byte identity, whitespace, big number, escapes kept when untouched, minimal re-encoding, invalid JSON / trailing garbage / empty line → original |
@@ -427,18 +437,21 @@ expected/actual on failure, summary. Exit 0 = all pass, 1 = any fail.
 
 Fake child: `agent-relay-tests.exe --fake-child <script>` — echo, echo Linux paths, write stderr,
 exit N, crash, ignore stdin EOF, exit with stdin open, unterminated last line, 10 MB line, spawn a
-grandchild that holds stdout open.
+grandchild immediately at start that holds stdout open.
 
-Harness: in-process (`RelayMain.Run` with injected streams + `IChildLauncher`) for most cases;
-out-of-process (`agent-relay-tests.exe --relay-under-test <script>`) only for killing the relay.
+Harness: in-process (`RelayMain.Run` with injected streams + `IChildLauncher`, no job) for most
+cases; out-of-process (`agent-relay-tests.exe --relay-under-test <script>`, real launcher with job)
+for job cases, so the test runner itself never joins a job.
 Every test has a 10 s timeout.
 
 Cases: stdin EOF closes child stdin; child ignoring EOF keeps relaying; exit with stdin open →
 relay exits; exit codes 0, 3, -1; crash; start failure → exit 1 + message; stderr bytes identical;
 stdout only protocol; 10 MB line intact; unterminated last line intact; passthrough delivers a
-prompt without newline at once; **[win]** grandchild holding stdout → relay exits after child exit
-and grandchild is gone; **[win]** killing the relay kills the child (PID check); logging: new file
-per session, pruning keeps `keep` files, log dir is a file → one warning, relay continues.
+prompt without newline at once; **[win]** grandchild spawned at child start and holding stdout → relay
+exits after child exit and grandchild is gone; **[win]** killing the relay kills the child (PID check); logging: new file
+per session, pruning keeps `keep` files when none are in use, a file in use is skipped,
+`maxSizeMB` reached → `LOG LIMIT` entry then no more writes, log dir is a file → one warning,
+relay continues.
 
 ### 12.4 Manual (README checklist)
 
@@ -453,8 +466,8 @@ Zed, both agents: start thread, run a tool, edit a file, approve a permission, r
 README:
 1. What it is / isn't (no sync, no isolation by itself).
 2. Build (`build.cmd`, `build.cmd test`); install = copy `bin\agent-relay-*.exe` + `agent-relay.json`.
-3. Config reference + migration from POC configs (`claudePath`/`codexPath` →
-   `agents.<name>.executable`, `logEnabled`/`logPath` → `agents.<name>.log`).
+3. Config reference (incl. whole-value agent `env`/`log`, D12) + migration from POC configs
+   (`claudePath`/`codexPath` → `agents.<name>.executable`, `logEnabled`/`logPath` → `agents.<name>.log`).
 4. Isolation setup (`wsl.conf`, `fstab` drvfs, `wsl --shutdown`).
 5. Agent install in WSL (Claude native installer; Codex install script, `bubblewrap` recommended).
 6. Zed: `agent_servers` only in global `%APPDATA%\Zed\settings.json` (project settings drop it,

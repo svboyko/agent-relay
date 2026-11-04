@@ -19,5 +19,8 @@
       for Claude. (SPEC §8.2–8.4, DECISIONS D2)
 - [ ] **Job object teardown:** when the relay's job object kills `wsl.exe`, check that the Linux agent process
       also ends (`ps` in the distro). (SPEC §9)
+- [ ] **Job object when started by Zed:** check that the relay can assign itself to its job when Zed
+      already runs it inside a job (nested jobs), and that a descendant spawned at once is killed after
+      the child exits. (SPEC §9)
 - [ ] **wsl.exe command-line form** (`--exec` vs `--`): run test T-L7 on Windows, pick the variant, update
       R6, SPEC and the README. (SPEC §6.1, §12.4)

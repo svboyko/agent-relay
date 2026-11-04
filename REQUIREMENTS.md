@@ -37,7 +37,7 @@
 - **R24:** stdin → child, child stdout → stdout. When translating: line-framed UTF-8, no BOM, `\n`, flush per line. Passthrough (no translation, mode `windows`): raw bytes, flush per read. (V10)
 - **R25:** Child stderr → stderr as raw bytes, untranslated. (V10)
 - **R26:** stdout = protocol only. Diagnostics → stderr or log. (V10)
-- **R27:** Child runs in a Windows Job Object (killing the relay kills it). Child exit → terminate job (descendants holding pipes die) → drain stdout/stderr to EOF → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. (V11)
+- **R27:** Relay joins a Windows Job Object before starting the child, so the child and its descendants are members from creation (killing the relay kills them; job setup failure → exit 1, no child). Child exit → kill remaining job processes (descendants holding pipes) → drain stdout/stderr to EOF → exit with child code. stdin EOF → close child stdin (no kill). Open stdin after child exit → no hang. (V11)
 - **R28:** Child start fail → stderr msg, exit 1. (V11)
 - **R29:** Blocking reads, no polling; idle CPU ≈ 0. No delay beyond one line. (V2, V10)
 
@@ -45,7 +45,7 @@
 - **R30:** Off by default. Configured per agent only; no project or shared log. One file per session in `log.dir` (relative → beside exe, default `logs`). (V12)
 - **R31:** Entry = ISO timestamp, session id, direction, received + forwarded line. (V12)
 - **R32:** Launch entry: cwd, project, args, `wsl.exe` cmdline, env. Mask names containing KEY/TOKEN/SECRET/PASSWORD/AUTH/CREDENTIAL. (V4, V12)
-- **R33:** Keep last `log.keep` session files per agent (default 20); older deleted at start. (V12)
+- **R33:** At start delete older session files beyond `log.keep` (default 20), best effort (files in use skipped). Per-file cap `log.maxSizeMB` (default 10) → stop logging that session. (V12)
 - **R34:** Log write fail → one stderr warning, relay continues. (V12)
 
 ## Security

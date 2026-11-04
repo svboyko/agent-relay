@@ -41,10 +41,15 @@ isolation; the README says so.
 - Default Windows executable = `<agent>.exe` found on `PATH`; otherwise set `windowsExecutable`.
   Avoids hardcoded install paths that must be verified per agent.
 
-## D5. Child exit → terminate job → plain join
-The child runs in a Job Object (kill on job close). When the child exits, the relay terminates the
-job, so descendants that inherited stdout/stderr die and the pipes close. Pumps then reach EOF and
-are joined normally — no idle timeout, no partial-line special cases.
+## D5. Child exit → kill job members → plain join
+The relay assigns **itself** to a Job Object (kill on job close) before starting the child. Windows
+puts processes created by a job member into the job, so the child and its descendants can never
+escape (assigning the child after start would leave a window). The alternative, `CreateProcess`
+suspended + assign + resume, would replace `System.Diagnostics.Process` with much more P/Invoke code.
+When the child exits, the relay kills all other job processes, so descendants that inherited
+stdout/stderr die and the pipes close. Pumps then reach EOF and are joined normally — no idle
+timeout, no partial-line special cases.
+Job setup failure → exit 1 before any child exists; running without a job could hang on join.
 Trade-off: background processes started by the agent end with it.
 Under WSL the pipes are held by `wsl.exe`, so stuck pipes mostly affect mode `windows`.
 
@@ -62,6 +67,10 @@ pumps, so prompts without a trailing newline appear at once.
 ## D8. Logs: per agent, one file per session
 Logging is configured only per agent; there is no project-wide or shared log. Each relay process
 writes its own file and old files are pruned by count. No cross-process mutex, no rotation races.
+- Pruning is best effort: files of running sessions can't be deleted, so with many concurrent
+  sessions more than `keep` files exist.
+- A per-file size cap (`maxSizeMB`) stops logging for that session, so one long session can't grow
+  without limit. The log tail is lost then; raise the cap for full captures.
 **[POC]** Shared log reached 13 MB; logging was on in the sample config → off by default.
 
 ## D9. Config only beside the exe, strict schema
@@ -78,3 +87,12 @@ POC-era fields (`logEnabled`, `claudePath`, …) with a clear message.
 ## D11. Known limitation: resumed Claude history
 Zed's Claude adapter reads `<session>.jsonl` from `CLAUDE_CONFIG_DIR` directly, not through the
 relay, so old tool calls show Linux paths. Fixing it would mean rewriting files (out of scope, V13).
+
+## D12. Agent `env` and `log` replace, not merge
+Inside an agent section, `executable`, `env` and `log` are taken whole: project agent value, else
+default agent value. Only the top-level `env` chain merges by key (defaults → project → agent).
+Reason: one simple rule, no `null` deletion, no per-field log merge.
+Consequences (documented in README):
+- project `"agents": {"claude": {"env": {}}}` drops all `defaults.agents.claude.env` keys;
+- project agent `"log": {"enabled": true}` uses built-in `dir`/`keep`/`maxSizeMB`, not the defaults' values;
+- an inherited env key can be overridden but not removed.
