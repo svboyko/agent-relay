@@ -6,7 +6,7 @@ Agent Relay connects your editor to agents running in WSL and translates paths b
 
 Why use Agent Relay? Read [the story behind it](STORY.md).
 
-Currently tested only with Zed. VS Code integration is planned.
+Currently tested only with [Zed](https://zed.dev). [VS Code](https://code.visualstudio.com) integration is planned.
 
 ## Build
 
